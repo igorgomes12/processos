@@ -1,0 +1,9 @@
+google-cloud-aiplatform[adk,agent_engines]
+google-adk
+google-genai
+python-dotenv
+reportlab
+pandas
+openpyxl
+google-cloud-firestore
+google-cloud-logging

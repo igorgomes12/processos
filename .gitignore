@@ -1,0 +1,96 @@
+# =============================================================================
+# ARQUIVOS SENSÍVEIS / CREDENCIAIS
+# ATENÇÃO: se .env ou credentials.json já foram commitados, revogue as chaves!
+# =============================================================================
+
+# Variáveis de ambiente com chaves de API e segredos
+.env
+.env.*
+!.env.example
+
+# Credenciais Google (Service Account, OAuth etc.)
+credentials.json
+*service_account*.json
+*service-account*.json
+*.pem
+*.key
+
+# =============================================================================
+# ARTEFATOS GERADOS EM TEMPO DE EXECUÇÃO (Google ADK)
+# =============================================================================
+
+# Sessões, histórico e artefatos do ADK (Excel / PDF gerados pelos agentes)
+.adk/
+
+# Arquivos de saída gerados pelos agentes
+*.xlsx
+*.pdf
+
+# =============================================================================
+# PYTHON — ARQUIVOS GERADOS
+# =============================================================================
+
+# Bytecode e caches do interpretador
+__pycache__/
+*.py[oc]
+
+# Distribuição e build
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+
+# Ferramentas de teste e cobertura
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Caches de linters e type checkers
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# =============================================================================
+# AMBIENTES VIRTUAIS
+# =============================================================================
+
+.venv
+venv/
+env/
+ENV/
+
+# =============================================================================
+# LOGS E TEMPORÁRIOS
+# =============================================================================
+
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# =============================================================================
+# SISTEMA OPERACIONAL
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# =============================================================================
+# IDEs E EDITORES
+# =============================================================================
+
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
