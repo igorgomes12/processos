@@ -256,6 +256,8 @@ resource.type="aiplatform.googleapis.com/ReasoningEngine"
 | `display_name` | `agente-processos` | Nome exibido no Console GCP |
 | `GOOGLE_GENAI_USE_VERTEXAI` | `1` | Força uso de ADC (sem API Key) no ambiente remoto |
 
+> **Workaround ativo — imagem base `reasoning-engine-py311:prod` (2026-03-02):** A versão atual da imagem base não cria o symlink `/code/.venv/bin/python` e executa o container como não-root, causando falha no step `compileall` do build com `exit code 127` ou `PermissionError`. O script `installation_scripts/fix_venv.sh` contorna esse bug criando um wrapper Python que redireciona o `compileall` para um diretório gravável (`/tmp/compileall-sp`). Ele é incluído automaticamente no `deploy.py` via `build_options.installation_scripts` e é **necessário em todos os deploys** enquanto o Google não corrigir a imagem base.
+
 ---
 
 ## Estrutura do Projeto
@@ -317,6 +319,8 @@ agente-processos/
 ├── .python-version               # Versão do Python para pyenv (3.11.3)
 ├── credentials.json              # Service account GCP (não versionado)
 ├── .env                          # Variáveis de ambiente (não versionado)
+├── installation_scripts/
+│   └── fix_venv.sh               # Workaround para bug da imagem base reasoning-engine-py311:prod
 ├── json_example.py               # Exemplo do schema JSON canônico
 ├── requirements.txt              # Dependências Python
 ├── deploy.py                     # Script de deploy
@@ -418,6 +422,7 @@ Consulte [json_example.py](json_example.py) para um exemplo completo do schema.
 - O `document_processor` usa `thinking_budget=0` para evitar respostas vazias ao processar PDFs com labels de confidencialidade (MSIP).
 - O extra `agent_engines` do `google-cloud-aiplatform` não está disponível na versão 1.139.0 — isso gera um warning durante a instalação, mas não impede o funcionamento do sistema.
 - No Windows com pyenv-win, o comando `python -m venv` pode falhar via shim; use `$env:PYENV_VERSION="3.11.3"` antes de criar o venv ou use o caminho direto do executável.
+- **Bug na imagem base `reasoning-engine-py311:prod` (2026-03-02):** A versão atual da imagem não cria `/code/.venv/bin/python` e executa como não-root, causando falha no build remoto (`exit code 127` / `PermissionError`). O script `installation_scripts/fix_venv.sh` aplica o workaround automaticamente — é necessário em todos os deploys até o Google publicar uma imagem corrigida.
 
 ---
 

@@ -24,6 +24,13 @@ PERMISSÕES IAM NECESSÁRIAS PARA O FIRESTORE (banco "as-is-processes"):
 
 import os
 import sys
+
+# Força UTF-8 no stdout/stderr para evitar UnicodeEncodeError com emojis no Windows (cp1252)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import google.auth
 import google.auth.transport.requests
 from dotenv import load_dotenv
@@ -84,12 +91,13 @@ print("   Callbacks    : removidos (não serializáveis para deploy)")
 remote_agent = agent_engines.create(
     agent_engine=root_agent,
     requirements=[
-        # google-genai fixado na mesma versão do ambiente local para garantir
-        # consistência. O _http_options bug é resolvido via Vertex AI mode (ADC)
-        # que evita o conflito entre GOOGLE_API_KEY e GOOGLE_CLOUD_PROJECT/LOCATION.
-        "google-cloud-aiplatform[adk,agent_engines]==1.138.0",
-        "google-adk==1.25.1",
-        "google-genai==1.64.0",
+        # Versões alinhadas ao ambiente local (venv Python 3.11.3) para garantir
+        # que o build remoto use exatamente os mesmos pacotes e evitar conflitos.
+        "google-cloud-aiplatform[adk,agent_engines]==1.139.0",
+        "google-adk==1.26.0",
+        "google-genai==1.65.0",
+        "cloudpickle==3.1.2",       # necessário para serialização do agente
+        "pydantic==2.12.5",         # necessário pelo google-adk/vertexai
         "google-cloud-firestore",
         "google-cloud-logging",
         "google-cloud-storage>=3.0.0",  # evita FutureWarning do google-cloud-aiplatform
@@ -97,6 +105,7 @@ remote_agent = agent_engines.create(
         "openpyxl",
         "reportlab",
         "python-dotenv",
+        "python-docx",              # necessário para leitura de arquivos DOCX
     ],
     extra_packages=[
         "./agent_tools",
@@ -105,7 +114,14 @@ remote_agent = agent_engines.create(
         "./document_processor",
         "./logger",
         "./prompts",
+        # Workaround para bug na imagem base reasoning-engine-py311:prod (2026-03-02):
+        # o step 'compileall' falha porque /code/.venv/bin/python não existe na nova
+        # versão da imagem. O script abaixo cria o symlink necessário antes do step.
+        "installation_scripts/fix_venv.sh",
     ],
+    build_options={
+        "installation_scripts": ["installation_scripts/fix_venv.sh"],
+    },
     display_name="agente-processos",
     description="Pipeline BPM AS-IS: extração JSON N0-N4 + geração de planilha XLSX e documento PDF",
     env_vars={
