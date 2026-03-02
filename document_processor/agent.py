@@ -1,8 +1,11 @@
+import io
 import os
 from pathlib import Path
+from typing import Optional
 from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.models.llm_request import LlmRequest
 from google.adk.tools import agent_tool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types as genai_types
@@ -25,6 +28,52 @@ if os.getenv("GOOGLE_GENAI_USE_VERTEXAI") == "1":
     os.environ.pop("GOOGLE_API_KEY", None)
 
 model_name = os.getenv("MODEL", "gemini-2.5-flash")
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _converter_docx_para_texto(dados: bytes) -> str:
+    """Extrai texto de um arquivo DOCX usando python-docx."""
+    from docx import Document  # import lazy para não quebrar se não instalado
+    doc = Document(io.BytesIO(dados))
+    partes = []
+    for paragrafo in doc.paragraphs:
+        if paragrafo.text.strip():
+            partes.append(paragrafo.text)
+    for tabela in doc.tables:
+        for linha in tabela.rows:
+            celulas = [c.text.strip() for c in linha.cells if c.text.strip()]
+            if celulas:
+                partes.append(" | ".join(celulas))
+    return "\n".join(partes)
+
+
+def before_model_callback(
+    callback_context: CallbackContext,
+    llm_request: LlmRequest,
+) -> Optional[genai_types.GenerateContentResponse]:
+    """Converte automaticamente arquivos DOCX em texto antes de enviar ao Gemini.
+
+    O Gemini não suporta o MIME type DOCX nativamente. Este callback intercepta
+    qualquer Part com inline_data de DOCX e substitui pelo texto extraído.
+    """
+    for content in llm_request.contents:
+        if not content.parts:
+            continue
+        novos_parts = []
+        for part in content.parts:
+            if (
+                part.inline_data
+                and part.inline_data.mime_type == _DOCX_MIME
+                and part.inline_data.data
+            ):
+                texto = _converter_docx_para_texto(part.inline_data.data)
+                novos_parts.append(genai_types.Part(text=f"[Conteúdo extraído do DOCX]\n\n{texto}"))
+            else:
+                novos_parts.append(part)
+        content.parts = novos_parts
+    return None  # continua o fluxo normal
+
 
 as_is_agent = agent_tool.AgentTool(agent=as_is_root_agent)
 pdf_subagent = agent_tool.AgentTool(agent=agente_gerador_pdf_md_root_agent)
@@ -205,6 +254,7 @@ root_agent = Agent(
         Se você reescrever ou omitir os nomes dos arquivos, os links NÃO aparecerão.
     """,
     tools=[preparar_state_inicial, as_is_agent, generate_xlsx_from_state, pdf_subagent, generate_pdf_from_state],
+    before_model_callback=before_model_callback,
     before_tool_callback=_before_tool_cb,
     after_tool_callback=_after_tool_cb,
     generate_content_config=genai_types.GenerateContentConfig(

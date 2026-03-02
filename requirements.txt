@@ -7,3 +7,4 @@ pandas
 openpyxl
 google-cloud-firestore
 google-cloud-logging
+python-docx
