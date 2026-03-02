@@ -11,7 +11,7 @@ Sistema multi-agente para mapeamento e documentação de processos de negócio n
 - **Persistência no Firestore** — cada JSON gerado é persistido automaticamente no Google Cloud Firestore via tool determinística (projeto `steady-computer-487217-p6`, database `as-is-processes`, coleção `processos`).
 - **Geração de planilha Excel** — arquivo `processos.xlsx` formatado com cabeçalho estilizado, wrap text, freeze pane e autofilter.
 - **Geração de documento PDF** — arquivo `documento_processo.pdf` (A4) completo com metadados, fluxograma Mermaid, tabela de fluxo, diagnóstico AS-IS, backlog de melhorias, KPIs e registro de pendências.
-- **Download via ADK** — ambos os artefatos ficam disponíveis para download diretamente pela interface do ADK.
+- **Download via ADK** — a planilha Excel fica disponível para download imediato ao final do processamento. O PDF é gerado sob demanda: o sistema pergunta ao usuário se deseja o documento e, mediante confirmação, apresenta o link de download.
 
 ---
 
@@ -114,14 +114,147 @@ adk run document_processor
 1. Inicie o ADK Web UI com `adk web`.
 2. Selecione o agente **`document_processor`**.
 3. Envie um arquivo contendo a descrição de um processo de negócio (PDF, DOCX ou imagem).
-4. O sistema executará automaticamente o pipeline completo (6 etapas):
+4. **Turno 1 — Análise e planilha Excel:** o sistema executa o pipeline completo em 4 etapas:
    1. Preparação do state inicial (carrega template Markdown)
    2. Extração da estrutura AS-IS em JSON (sub-agente `as_is`)
-   3. Persistência do JSON no Firestore (tool determinística `save_to_firestore_from_state`)
-   4. Geração de `processos.xlsx` a partir do JSON (tool determinística `generate_xlsx_from_state`)
-   5. Geração do Markdown do documento de processo (sub-agente `agente_gerador_pdf_md`)
-   6. Geração de `documento_processo.pdf` a partir do Markdown (tool determinística `generate_pdf_from_state`)
-5. Os links de download para os dois arquivos aparecerão na interface ao final do processamento.
+   3. Geração do Markdown do documento de processo (sub-agente `agente_gerador_pdf_md`)
+   4. Geração de `processos.xlsx` + persistência no Firestore (tool `generate_xlsx_from_state`)
+5. O link de download da planilha Excel é apresentado. O sistema pergunta se o usuário deseja o PDF.
+6. **Turno 2 — PDF sob demanda (opcional):** se o usuário confirmar, a tool `generate_pdf_from_state` é chamada e o link de download do `documento_processo.pdf` é apresentado. Se recusar, o fluxo encerra sem gerar o PDF.
+
+---
+
+## Deploy no Vertex AI Agent Engine
+
+O script `deploy.py` publica o agente no **Vertex AI Agent Engine** (Reasoning Engine), tornando-o acessível via API REST sem necessidade de ambiente local.
+
+### Pré-requisitos de deploy
+
+| Requisito | Verificação |
+|-----------|-------------|
+| [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) (`gcloud`) instalado | `gcloud --version` |
+| Autenticação ADC configurada | `gcloud auth application-default login` |
+| Projeto GCP configurado | `gcloud config set project steady-computer-487217-p6` |
+| APIs necessárias habilitadas | ver seção abaixo |
+| Bucket GCS de staging criado | `gs://agente-processos-staging` em `us-central1` |
+
+### 1. Autenticação
+
+```powershell
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project steady-computer-487217-p6
+```
+
+### 2. Habilitar APIs necessárias
+
+```powershell
+gcloud services enable aiplatform.googleapis.com `
+    firestore.googleapis.com `
+    cloudbuild.googleapis.com `
+    storage.googleapis.com `
+    logging.googleapis.com
+```
+
+### 3. Criar o bucket de staging (apenas na primeira vez)
+
+```powershell
+gcloud storage buckets create gs://agente-processos-staging `
+    --project=steady-computer-487217-p6 `
+    --location=us-central1
+```
+
+### 4. Executar o deploy
+
+Com o ambiente virtual ativado, rode o `deploy.py` a partir da raiz do projeto:
+
+```powershell
+.\.venv\Scripts\python.exe deploy.py
+```
+
+O script irá:
+1. Autenticar via ADC e configurar o quota project.
+2. Serializar o agente com `cloudpickle` e fazer upload para o bucket GCS.
+3. Fazer upload de `requirements.txt` e do tarball `dependencies.tar.gz` (código-fonte dos pacotes extra).
+4. Disparar o build remoto no Vertex AI (Cloud Build — pode levar 10–15 minutos).
+5. Aguardar a conclusão e exibir o `resource_name` do agente criado.
+
+Exemplo de saída esperada:
+
+```
+🚀 Iniciando deploy no Vertex AI Agent Engine...
+   Projeto  : steady-computer-487217-p6
+   Região   : us-central1
+   Bucket   : gs://agente-processos-staging
+   Modelo   : gemini-2.5-flash
+   Callbacks    : removidos (não serializáveis para deploy)
+   __pycache__  : removidos de todos os pacotes extra
+
+✅ Deploy concluído com sucesso!
+   Resource name : projects/658891422743/locations/us-central1/reasoningEngines/XXXXXXXXXXXXXXXXX
+   Display name  : agente-processos
+```
+
+### 5. Permissão IAM para o Firestore (pós-deploy)
+
+O Vertex AI Reasoning Engine executa sob uma service account dedicada que precisa de permissão para gravar no Firestore. O script exibe o comando exato ao final, mas o procedimento é:
+
+```powershell
+# Obter o número do projeto
+$PROJECT_NUMBER = gcloud projects describe steady-computer-487217-p6 --format="value(projectNumber)"
+
+# Conceder roles/datastore.user à service account do Reasoning Engine
+gcloud projects add-iam-policy-binding steady-computer-487217-p6 `
+    --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com" `
+    --role="roles/datastore.user"
+```
+
+> Sem essa permissão o agente funciona normalmente, mas a persistência no Firestore falhará silenciosamente (o erro aparece nos logs do Cloud Logging).
+
+### 6. Usando o agente após o deploy
+
+```python
+import vertexai
+from vertexai import agent_engines
+
+vertexai.init(project="steady-computer-487217-p6", location="us-central1")
+
+# Substitua pelo resource_name exibido ao final do deploy
+agent = agent_engines.get("projects/658891422743/locations/us-central1/reasoningEngines/XXXXXXXXXXXXXXXXX")
+
+# Criar sessão e enviar mensagem
+session = agent.create_session(user_id="usuario-01")
+for event in agent.stream_query(
+    user_id="usuario-01",
+    session_id=session["id"],
+    message="Olá, vou enviar um documento de processo.",
+):
+    print(event)
+```
+
+### 7. Verificar logs do deploy
+
+Em caso de falha no build, acesse os logs pelo Console GCP:
+
+```
+https://console.cloud.google.com/logs/query?project=steady-computer-487217-p6
+```
+
+Filtro útil no Log Explorer:
+
+```
+resource.type="aiplatform.googleapis.com/ReasoningEngine"
+```
+
+### Configurações do deploy (`deploy.py`)
+
+| Parâmetro | Valor atual | Descrição |
+|-----------|-------------|-----------|
+| `PROJECT_ID` | `steady-computer-487217-p6` | Projeto GCP |
+| `LOCATION` | `us-central1` | Região do Vertex AI |
+| `STAGING_BUCKET` | `gs://agente-processos-staging` | Bucket GCS para artefatos de build |
+| `display_name` | `agente-processos` | Nome exibido no Console GCP |
+| `GOOGLE_GENAI_USE_VERTEXAI` | `1` | Força uso de ADC (sem API Key) no ambiente remoto |
 
 ---
 
@@ -137,8 +270,9 @@ agente-processos/
 │   │   ├── modelo_documento_processo_instrucoes_v2.md  # Template do documento AS-IS (v2)
 │   │   └── modelo_documento_processo_instrucoes_v3.md  # Template do documento AS-IS (v3, ativo)
 │   └── tools/
-│       ├── generate_artifacts.py     # Tools determinísticas: save_to_firestore_from_state,
-│       │                             #   generate_xlsx_from_state, generate_pdf_from_state
+│       ├── generate_artifacts.py     # Tools determinísticas: generate_xlsx_from_state
+│       │                             #   (+ persistência Firestore como side-effect),
+│       │                             #   generate_pdf_from_state
 │       └── json_to_xlsx.py           # (legado) Cópia duplicada do agent_tools/json_to_xlsx.py
 │
 ├── as_is/                        # Sub-agente: extração JSON N0–N4 (apenas LLM, sem tools)
@@ -199,16 +333,20 @@ O sistema usa **3 agentes** organizados em hierarquia orquestradora/sub-agente, 
 ```
 document_processor  ← agente raiz (orquestrador) [gemini-2.5-flash, thinking_budget=0]
 ├── preparar_state_inicial          ← tool local: carrega template Markdown no state
+│
+│   ── TURNO 1 (ao receber o documento) ──────────────────────────────────────
 ├── as_is                           ← sub-agente [gemini-2.5-flash]: extrai JSON N0–N4
 │                                      └─→ state["pdf_input_json"]  (via output_key)
-├── save_to_firestore_from_state    ← tool determinística: JSON → Firestore
-├── generate_xlsx_from_state        ← tool determinística: JSON → processos.xlsx
 ├── agente_gerador_pdf_md           ← sub-agente [gemini-2.5-flash, thinking_budget=8192]: JSON → Markdown
 │                                      └─→ state["pdf_markdown"]  (via output_key)
+├── generate_xlsx_from_state        ← tool determinística: JSON → processos.xlsx
+│                                      side-effect: persiste JSON no Firestore
+│
+│   ── TURNO 2 (se usuário confirmar o PDF) ──────────────────────────────────
 └── generate_pdf_from_state         ← tool determinística: Markdown → documento_processo.pdf
 ```
 
-**Princípio arquitetural:** A geração de conteúdo (JSON, Markdown) é feita pelos sub-agentes via LLM. A persistência no Firestore e a geração de artefatos de download (XLSX, PDF) são feitas por **tools determinísticas** no orquestrador, garantindo que os arquivos sejam sempre criados independentemente do comportamento dos sub-agentes.
+**Princípio arquitetural:** A geração de conteúdo (JSON, Markdown) é feita pelos sub-agentes via LLM. A persistência no Firestore é um side-effect embutido em `generate_xlsx_from_state`, e a geração dos artefatos de download (XLSX, PDF) é feita por **tools determinísticas** no orquestrador, garantindo que os arquivos sejam sempre criados independentemente do comportamento dos sub-agentes. O PDF é gerado apenas sob demanda (turno 2), mediante confirmação do usuário.
 
 Consulte [AGENTS.MD](AGENTS.MD) para a documentação completa da arquitetura, responsabilidades, tools, state compartilhado e convenções de cada agente.
 
