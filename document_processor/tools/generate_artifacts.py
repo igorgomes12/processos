@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Dict, Any
 
@@ -26,6 +27,10 @@ from agente_gerador_pdf_md.tools.markdown_to_pdf_tool import _build_pdf
 
 # ─── Configurações Firestore ─────────────────────────────────────────────────
 _CREDENTIALS_PATH = Path(__file__).resolve().parents[2] / "credentials.json"
+
+# Namespace UUID fixo para geração determinística de IDs (mesmo padrão do Spanner).
+# Garante idempotência: reprocessar o mesmo documento sobrescreve os dados sem duplicar.
+_UUID_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 _GCP_PROJECT = "steady-computer-487217-p6"
 _FIRESTORE_DATABASE = "as-is-processes"
 _COLLECTION_NAME = "processos"
@@ -74,15 +79,28 @@ def _get_firestore_async_client() -> firestore.AsyncClient:
     return _firestore_async_client
 
 
+def _make_firestore_id(data: dict) -> str:
+    """Gera um ID determinístico para o documento Firestore baseado no conteúdo
+    das rows (ignora meta.createdAt que muda a cada execução).
+    Mesmo conteúdo → mesmo ID → upsert idempotente sem duplicatas.
+    """
+    chave = json.dumps(data.get("rows", data), sort_keys=True, ensure_ascii=False)
+    return str(uuid.uuid5(_UUID_NAMESPACE, chave))
+
+
 async def _write_to_firestore_async(data: dict) -> str:
     """Executa a escrita assíncrona no Firestore via AsyncClient nativo.
 
-    Evita o uso de asyncio.to_thread com cliente gRPC síncrono, que pode
-    causar deadlocks ou timeouts no event loop do Vertex AI Agent Engine.
+    Persiste o JSON completo como UM único documento com ID determinístico
+    (UUID v5 baseado nas rows), garantindo que reprocessamentos do mesmo
+    documento sobrescrevam os dados sem criar duplicatas (upsert idempotente).
+
+    Retorna o ID do documento persistido.
     """
     client = _get_firestore_async_client()
-    _, doc_ref = await client.collection(_COLLECTION_NAME).add(data)
-    return doc_ref.id
+    doc_id = _make_firestore_id(data)
+    await client.collection(_COLLECTION_NAME).document(doc_id).set(data)
+    return doc_id
 
 
 async def save_to_firestore_from_state(tool_context: ToolContext) -> Dict[str, Any]:
@@ -127,8 +145,10 @@ async def save_to_firestore_from_state(tool_context: ToolContext) -> Dict[str, A
         return {
             "status": "success",
             "message": (
-                f"Dados persistidos com sucesso no Firestore "
-                f"(coleção: '{_COLLECTION_NAME}', documento: '{doc_id}')."
+                f"JSON persistido com sucesso no Firestore "
+                f"(banco: '{_FIRESTORE_DATABASE}', coleção: '{_COLLECTION_NAME}', "
+                f"documento: '{doc_id}'). "
+                f"ID determinístico — reprocessamentos sobrescrevem sem duplicar."
             ),
         }
     except asyncio.TimeoutError:

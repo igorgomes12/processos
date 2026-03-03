@@ -99,6 +99,7 @@ remote_agent = agent_engines.create(
         "cloudpickle==3.1.2",       # necessário para serialização do agente
         "pydantic==2.12.5",         # necessário pelo google-adk/vertexai
         "google-cloud-firestore",
+        "google-cloud-spanner",         # persistência no Spanner (save_to_spanner_from_state)
         "google-cloud-logging",
         "google-cloud-storage>=3.0.0",  # evita FutureWarning do google-cloud-aiplatform
         "pandas",
@@ -132,6 +133,10 @@ remote_agent = agent_engines.create(
         # sem conflito com GOOGLE_API_KEY, resolvendo o AttributeError _http_options.
         "GOOGLE_GENAI_USE_VERTEXAI": "1",
         "MODEL": MODEL,
+        # Desabilita o exporter de métricas internas do Spanner SDK (OpenTelemetry →
+        # Cloud Monitoring). Sem este flag, o SDK bloqueia indefinidamente quando a
+        # service account não tem roles/monitoring.metricWriter.
+        "SPANNER_ENABLE_BUILTIN_METRICS": "false",
     },
 )
 
@@ -176,5 +181,38 @@ except Exception:
     print(f'       --role="roles/datastore.user"')
 print()
 print("Sem essa permissão o registro no Firestore falhará silenciosamente")
+print("(o erro será visível nos logs do Cloud Logging / stderr do agente).")
+print("=" * 70)
+
+# ── Verificação de permissão IAM do Spanner ───────────────────────────────────
+print()
+print("=" * 70)
+print("⚠️  ATENÇÃO: PERMISSÃO SPANNER NECESSÁRIA")
+print("=" * 70)
+print()
+print("A mesma service account do Reasoning Engine precisa de acesso ao Spanner.")
+print()
+try:
+    sa_spanner = f"service-{project_number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
+    print(f"   {sa_spanner}")
+    print()
+    print("Execute o seguinte comando para conceder acesso ao Spanner:")
+    print()
+    print(f'   gcloud spanner instances add-iam-policy-binding id-agente-processo \\')
+    print(f'       --project={PROJECT_ID} \\')
+    print(f'       --member="serviceAccount:{sa_spanner}" \\')
+    print(f'       --role="roles/spanner.databaseUser"')
+except NameError:
+    print("   service-{PROJECT_NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com")
+    print()
+    print("Execute para obter o PROJECT_NUMBER e conceder acesso ao Spanner:")
+    print()
+    print(f"   PROJECT_NUMBER=$(gcloud projects describe {PROJECT_ID} --format='value(projectNumber)')")
+    print(f'   gcloud spanner instances add-iam-policy-binding id-agente-processo \\')
+    print(f'       --project={PROJECT_ID} \\')
+    print(f'       --member="serviceAccount:service-${{PROJECT_NUMBER}}@gcp-sa-aiplatform-re.iam.gserviceaccount.com" \\')
+    print(f'       --role="roles/spanner.databaseUser"')
+print()
+print("Sem essa permissão o registro no Spanner falhará com PERMISSION_DENIED.")
 print("(o erro será visível nos logs do Cloud Logging / stderr do agente).")
 print("=" * 70)

@@ -6,5 +6,6 @@ reportlab
 pandas
 openpyxl
 google-cloud-firestore
+google-cloud-spanner
 google-cloud-logging
 python-docx
