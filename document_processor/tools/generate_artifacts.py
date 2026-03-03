@@ -8,14 +8,11 @@ independentemente de os sub-agentes terem chamado suas próprias tools internas.
 """
 
 import asyncio
-import io
 import json
 import os
-import re
 import sys
 import tempfile
 import threading
-import zipfile
 from pathlib import Path
 from typing import Dict, Any
 
@@ -33,6 +30,9 @@ _GCP_PROJECT = "steady-computer-487217-p6"
 _FIRESTORE_DATABASE = "as-is-processes"
 _COLLECTION_NAME = "processos"
 _FIRESTORE_TIMEOUT = 30
+
+# ─── Arquivo de debug (sobrescrito a cada execução) ─────────────────────────
+_DEBUG_JSON_PATH = Path(__file__).resolve().parents[2] / "debug_last_json.json"
 
 # ─── Singleton async + lock de thread-safety ────────────────────────────────
 _firestore_async_client: firestore.AsyncClient | None = None
@@ -228,6 +228,14 @@ async def generate_xlsx_from_state(tool_context: ToolContext) -> Dict[str, Any]:
             "message": f"Não foi possível extrair JSON válido do state. Conteúdo: {raw_json[:200]}",
         }
 
+    # ── Grava arquivo de debug (sobrescreve a cada execução) ─────────────────────
+    try:
+        parsed_debug = json.loads(json_str)
+        with open(_DEBUG_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(parsed_debug, f, ensure_ascii=False, indent=2)
+    except Exception as _e:
+        print(f"[WARN] Não foi possível gravar {_DEBUG_JSON_PATH}: {_e}", file=sys.stderr)
+
     # ── Persistência no Firestore (side-effect garantido, independente de LLM) ──
     firestore_status = "não realizada"
     try:
@@ -342,125 +350,3 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
         ),
     }
 
-
-def _build_zip_bytes(xlsx_bytes: bytes, pdf_bytes: bytes) -> bytes:
-    """Compacta XLSX e PDF em um ZIP em memória (síncrono, roda em thread)."""
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("processos.xlsx", xlsx_bytes)
-        zf.writestr("documento_processo.pdf", pdf_bytes)
-    return buffer.getvalue()
-
-
-async def generate_zip_from_state(tool_context: ToolContext) -> Dict[str, Any]:
-    """
-    Lê o JSON (pdf_input_json) e o Markdown (pdf_markdown) do state,
-    gera o XLSX e o PDF e os empacota em um único arquivo ZIP para download.
-
-    Também persiste o JSON no Firestore como side-effect.
-
-    Returns:
-        Dicionário com status e mensagem para exibição ao usuário.
-    """
-    # ── Validação do JSON ────────────────────────────────────────────────────
-    raw_json = tool_context.state.get("pdf_input_json", "")
-    if not raw_json or not raw_json.strip():
-        return {
-            "status": "error",
-            "message": "State 'pdf_input_json' está vazio. O as_is_agent não gerou o JSON.",
-        }
-
-    json_str = _extract_json_from_text(raw_json)
-    if not json_str:
-        return {
-            "status": "error",
-            "message": f"Não foi possível extrair JSON válido do state. Conteúdo: {raw_json[:200]}",
-        }
-
-    # ── Validação do Markdown ────────────────────────────────────────────────
-    markdown_content = tool_context.state.get("pdf_markdown", "")
-    if not markdown_content or not markdown_content.strip():
-        return {
-            "status": "error",
-            "message": "State 'pdf_markdown' está vazio. O agente_gerador_pdf_md não gerou o markdown.",
-        }
-
-    # Remove code fences se presentes
-    cleaned_md = markdown_content.strip()
-    if cleaned_md.startswith("```"):
-        lines = cleaned_md.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        cleaned_md = "\n".join(lines)
-
-    # ── Persistência no Firestore (side-effect garantido) ────────────────────
-    firestore_status = "não realizada"
-    try:
-        data = json.loads(json_str)
-        doc_id = await asyncio.wait_for(
-            _write_to_firestore_async(data),
-            timeout=_FIRESTORE_TIMEOUT,
-        )
-        firestore_status = f"sucesso (doc: {doc_id})"
-    except asyncio.TimeoutError:
-        firestore_status = f"timeout após {_FIRESTORE_TIMEOUT}s"
-        print(
-            f"[Firestore][ERROR] Timeout ao salvar no Firestore após {_FIRESTORE_TIMEOUT}s.",
-            file=sys.stderr,
-        )
-    except Exception as e:
-        firestore_status = f"erro: {e}"
-        print(f"[Firestore][ERROR] Falha ao salvar no Firestore: {e}", file=sys.stderr)
-
-    # ── Geração do XLSX ──────────────────────────────────────────────────────
-    try:
-        xlsx_bytes = await asyncio.wait_for(
-            asyncio.to_thread(_build_xlsx_bytes, json_str),
-            timeout=_XLSX_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        return {"status": "error", "message": f"Timeout ao gerar XLSX após {_XLSX_TIMEOUT}s. Firestore: {firestore_status}."}
-    except Exception as e:
-        return {"status": "error", "message": f"Erro ao gerar XLSX: {e}. Firestore: {firestore_status}."}
-
-    # ── Geração do PDF ───────────────────────────────────────────────────────
-    try:
-        pdf_bytes = await asyncio.wait_for(
-            asyncio.to_thread(_build_pdf, cleaned_md),
-            timeout=_PDF_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        return {"status": "error", "message": f"Timeout ao gerar PDF após {_PDF_TIMEOUT}s. Firestore: {firestore_status}."}
-    except Exception as e:
-        return {"status": "error", "message": f"Erro ao gerar PDF: {str(e)[:200]}. Firestore: {firestore_status}."}
-
-    if not pdf_bytes or len(pdf_bytes) == 0:
-        return {"status": "error", "message": "PDF gerado está vazio. Firestore: {firestore_status}."}
-
-    # ── Empacotamento ZIP ────────────────────────────────────────────────────
-    try:
-        zip_bytes = await asyncio.to_thread(_build_zip_bytes, xlsx_bytes, pdf_bytes)
-    except Exception as e:
-        return {"status": "error", "message": f"Erro ao gerar ZIP: {e}. Firestore: {firestore_status}."}
-
-    artifact_part = Part(
-        inline_data=Blob(
-            data=zip_bytes,
-            mime_type="application/zip",
-        )
-    )
-
-    version = await tool_context.save_artifact(
-        filename="processo_as_is.zip",
-        artifact=artifact_part,
-    )
-
-    return {
-        "status": "success",
-        "message": (
-            f"Arquivo 'processo_as_is.zip' (versão {version}) gerado com sucesso e disponível para download. "
-            f"O arquivo contém: processos.xlsx e documento_processo.pdf. Firestore: {firestore_status}."
-        ),
-    }

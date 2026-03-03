@@ -26,6 +26,9 @@ credentials.json
 *.xlsx
 *.pdf
 
+# Arquivo de debug do último JSON persistido no Firestore
+debug_last_json.json
+
 # =============================================================================
 # PYTHON — ARQUIVOS GERADOS
 # =============================================================================
