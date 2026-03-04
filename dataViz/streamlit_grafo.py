@@ -22,15 +22,16 @@ os.environ.setdefault("SPANNER_ENABLE_BUILTIN_METRICS", "false")
 
 # ─── Import do normalizador Mermaid (mesmo usado no pipeline PDF) ────────────
 try:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from agente_gerador_pdf_md.tools.markdown_to_pdf_tool import _clean_mermaid_code as _normalise_mermaid
 except Exception as _e:
-    import sys
-    print(f"[WARN] _clean_mermaid_code não importado: {_e} — usando fallback básico", file=sys.stderr)
+    import sys as _sys
+    print(f"[WARN] _clean_mermaid_code não importado: {_e} — usando fallback básico", file=_sys.stderr)
+    import re as _re
     def _normalise_mermaid(s: str) -> str:  # type: ignore[misc]
-        """Fallback: colapsa quebras dentro de labels substituindo por espaço."""
-        import re as _re
+        """Fallback: colapsa quebras dentro de labels."""
         s = s.replace('\r\n', '\n').replace('\r', '\n')
-        # Colapsa \n dentro de colchetes, chaves e parênteses (labels de nós)
         s = _re.sub(r'(\[[^\]]*?)\n([^\]]*?\])', lambda m: m.group(0).replace('\n', ' '), s)
         s = _re.sub(r'(\{[^}]*?)\n([^}]*?\})', lambda m: m.group(0).replace('\n', ' '), s)
         return s
@@ -54,210 +55,291 @@ def _inject_css() -> None:
 
         html, body, [class*="css"] {
             font-family: 'Inter', sans-serif;
-            background-color: #F4F5F7;
+            background-color: #F8F9FA;
         }
-        .stApp { background-color: #F4F5F7; }
-        .main .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+        .stApp { background-color: #F8F9FA; }
+        .main .block-container { padding-top: 1rem; padding-bottom: 2rem; }
+        [data-testid="stSidebar"] > div:first-child { padding-top: 1.875rem; }
 
         /* ── hero header ──────────────────────────────── */
         .hero {
-            background: #0C2D6B;
-            border-radius: 8px;
-            padding: 1.4rem 2rem;
+            background: #1a3560;
+            border-radius: 6px;
+            padding: 0 1.8rem;
+            min-height: 82px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
             margin-bottom: 1.2rem;
-            position: relative;
-            overflow: hidden;
-            border-left: 5px solid #F26522;
-            box-shadow: 0 2px 12px rgba(12,45,107,0.18);
-        }
-        .hero::after {
-            content: "";
-            position: absolute;
-            right: 0; top: 0; bottom: 0;
-            width: 180px;
-            background: linear-gradient(90deg, transparent, rgba(242,101,34,0.12));
+            box-shadow: 0 2px 8px rgba(26,53,96,0.15);
         }
         .hero-title {
-            font-size: 1.5rem; font-weight: 800;
-            color: #FFFFFF; letter-spacing: -0.3px; margin: 0;
+            font-size: 1.35rem; font-weight: 700;
+            color: #FFFFFF; letter-spacing: -0.2px; margin: 0;
         }
         .hero-subtitle {
-            font-size: 0.85rem; color: #93B8E8;
-            margin-top: 0.25rem; font-weight: 400;
+            font-size: 0.82rem; color: #a8c0e0;
+            margin-top: 0.2rem; font-weight: 400;
         }
 
         /* ── sidebar ──────────────────────────────────── */
         [data-testid="stSidebar"] {
             background: #FFFFFF;
-            border-right: 1px solid #E2E5EA;
+            border-right: 1px solid #dee2e6;
         }
         [data-testid="stSidebar"] .stMarkdown p,
-        [data-testid="stSidebar"] label { color: #374151 !important; }
+        [data-testid="stSidebar"] label { color: #495057 !important; }
 
         .sidebar-header {
-            background: #0C2D6B;
+            background: #1a3560;
             border-radius: 6px;
-            padding: 14px 16px;
-            margin-bottom: 12px;
-            border-left: 4px solid #F26522;
+            padding: 0 16px;
+            min-height: 82px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            margin-bottom: 14px;
         }
 
         /* ── section title ────────────────────────────── */
         .section-title {
-            font-size: 0.9rem; font-weight: 700;
-            color: #0C2D6B;
-            border-left: 3px solid #F26522;
-            padding-left: 10px;
+            font-size: 0.72rem; font-weight: 700;
+            color: #6c757d;
+            letter-spacing: 0.9px;
+            text-transform: uppercase;
             margin: 1rem 0 0.5rem;
         }
 
         /* ── process card (sidebar result) ───────────── */
         .proc-card {
             background: #FFFFFF;
-            border: 1px solid #E2E5EA;
-            border-left: 4px solid #0C2D6B;
+            border: 1px solid #dee2e6;
             border-radius: 6px;
             padding: 10px 14px 8px;
-            margin-bottom: 10px;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.05);
-            transition: box-shadow 0.2s;
+            margin-bottom: 4px;
         }
-        .proc-card:hover { box-shadow: 0 3px 12px rgba(12,45,107,0.12); }
         .proc-card-title {
-            font-size: 0.88rem; font-weight: 700;
-            color: #0C2D6B; margin-bottom: 4px;
-            line-height: 1.3;
+            font-size: 0.85rem; font-weight: 600;
+            color: #1a3560; margin-bottom: 3px;
+            line-height: 1.35;
         }
         .proc-card-sub {
-            font-size: 0.75rem; color: #6B7280;
+            font-size: 0.74rem; color: #6c757d;
             line-height: 1.4;
         }
         .proc-card-badge {
             display: inline-block;
-            background: #EBF0F8;
-            border: 1px solid #BDD0EB;
-            color: #1E5BB0;
-            font-size: 0.65rem; font-weight: 700;
-            padding: 2px 8px;
-            border-radius: 10px;
-            margin-top: 5px;
-            letter-spacing: 0.4px;
+            font-size: 0.68rem; color: #6c757d;
+            margin-top: 4px;
         }
 
         /* ── process header (main panel) ─────────────── */
         .proc-header {
             background: #FFFFFF;
-            border: 1px solid #E2E5EA;
-            border-top: 4px solid #0C2D6B;
-            border-radius: 8px;
-            padding: 1.2rem 1.6rem;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 1.1rem 1.5rem;
             margin-bottom: 1rem;
-            box-shadow: 0 1px 6px rgba(0,0,0,0.06);
         }
         .proc-header-title {
-            font-size: 1.3rem; font-weight: 800;
-            color: #0C2D6B; margin-bottom: 6px;
+            font-size: 1.1rem; font-weight: 700;
+            color: #1a3560; margin-bottom: 5px;
         }
         .proc-header-meta {
-            font-size: 0.8rem; color: #6B7280;
-            display: flex; gap: 16px; flex-wrap: wrap;
+            font-size: 0.78rem; color: #6c757d;
+            display: flex; gap: 14px; flex-wrap: wrap;
         }
         .proc-header-meta span { display: flex; align-items: center; gap: 4px; }
 
         /* ── metric cards ─────────────────────────────── */
-        .metric-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 1rem 0; }
+        .metric-row { display: flex; gap: 12px; flex-wrap: wrap; margin: 1rem 0; }
         .metric-card {
-            flex: 1; min-width: 110px;
+            flex: 1; min-width: 130px;
             background: #FFFFFF;
             border-radius: 6px;
-            padding: 12px 16px;
-            border: 1px solid #E2E5EA;
-            border-top: 3px solid #0C2D6B;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-            text-align: center;
+            padding: 16px 18px;
+            border: 1px solid #dee2e6;
+            border-top: 3px solid #00838f;
+            text-align: left;
         }
-        .metric-card.accent { border-top-color: #F26522; }
+        .metric-card.accent { border-top-color: #00838f; }
         .metric-value {
-            font-size: 1.75rem; font-weight: 800;
-            line-height: 1; margin-bottom: 3px; color: #0C2D6B;
+            font-size: 2rem; font-weight: 700;
+            line-height: 1; margin-bottom: 4px; color: #212529;
         }
-        .metric-card.accent .metric-value { color: #F26522; }
+        .metric-card.accent .metric-value { color: #212529; }
         .metric-label {
             font-size: 0.65rem; font-weight: 600;
-            letter-spacing: 0.7px; text-transform: uppercase; color: #6B7280;
+            letter-spacing: 0.8px; text-transform: uppercase; color: #6c757d;
+        }
+        .metric-sub {
+            font-size: 0.72rem; color: #00838f;
+            margin-top: 4px;
         }
 
         /* ── detail tags ──────────────────────────────── */
         .detail-tag {
             display: inline-block;
-            background: #EBF0F8; border: 1px solid #BDD0EB;
-            color: #1E5BB0; font-size: 0.72rem; font-weight: 600;
+            background: #f0f4ff; border: 1px solid #c9d6f0;
+            color: #1a3560; font-size: 0.72rem; font-weight: 500;
             padding: 2px 9px; border-radius: 4px; margin: 2px;
         }
-        .detail-tag-systems { background: #E6F4F5; border-color: #9DD1D5; color: #005D65; }
-        .detail-tag-kpi     { background: #FEF0E7; border-color: #F9B98A; color: #C4491A; }
-        .detail-tag-oport   { background: #EAF4EC; border-color: #9DCBA5; color: #1E5228; }
+        .detail-tag-systems { background: #e8f6f7; border-color: #a8d8dc; color: #00636b; }
+        .detail-tag-kpi     { background: #fff4ee; border-color: #f5c6a0; color: #9b4a1a; }
+        .detail-tag-oport   { background: #edf7ef; border-color: #a8d5b0; color: #1e5228; }
 
         /* ── accordion step card ──────────────────────── */
         .step-card {
             background: #FFFFFF;
-            border: 1px solid #E2E5EA;
+            border: 1px solid #dee2e6;
             border-radius: 6px;
             padding: 12px 16px;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
         .step-title {
-            font-size: 0.9rem; font-weight: 700; color: #1F2937;
+            font-size: 0.88rem; font-weight: 600; color: #212529;
             margin-bottom: 6px;
         }
         .step-desc {
-            font-size: 0.83rem; color: #374151; line-height: 1.55;
+            font-size: 0.82rem; color: #495057; line-height: 1.6;
             margin-bottom: 8px;
         }
         .level-badge {
             display: inline-block;
-            font-size: 0.65rem; font-weight: 700;
+            font-size: 0.62rem; font-weight: 600;
             padding: 2px 8px; border-radius: 3px;
-            letter-spacing: 0.5px; text-transform: uppercase;
+            letter-spacing: 0.4px; text-transform: uppercase;
             margin-right: 6px; margin-bottom: 4px;
+            border: 1px solid;
         }
-        .badge-n1 { background: #0C2D6B; color: #FFFFFF; }
-        .badge-n2 { background: #1E5BB0; color: #FFFFFF; }
-        .badge-n3 { background: #006D75; color: #FFFFFF; }
-        .badge-n4 { background: #F26522; color: #FFFFFF; }
+        .badge-n1 { background: #edf1f9; border-color: #b8c8e8; color: #1a3560; }
+        .badge-n2 { background: #e8f0fb; border-color: #aec4f0; color: #1e4d9b; }
+        .badge-n3 { background: #e8f6f7; border-color: #a8d8dc; color: #00636b; }
+        .badge-n4 { background: #fff4ee; border-color: #f5c6a0; color: #9b4a1a; }
 
         /* ── tabs ─────────────────────────────────────── */
         .stTabs [data-baseweb="tab-list"] {
-            background: #FFFFFF; border-radius: 6px;
-            padding: 3px 5px; border: 1px solid #E2E5EA; gap: 2px;
+            background: transparent;
+            border-bottom: 2px solid #dee2e6;
+            padding: 0; gap: 0;
         }
         .stTabs [data-baseweb="tab"] {
-            color: #6B7280; font-weight: 600;
-            font-size: 0.82rem; border-radius: 4px; padding: 5px 14px;
+            color: #6c757d; font-weight: 500;
+            font-size: 0.85rem; border-radius: 0;
+            padding: 8px 18px;
+            background: transparent !important;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
         }
         .stTabs [aria-selected="true"] {
-            background: #0C2D6B !important; color: #FFFFFF !important;
+            color: #1a3560 !important;
+            border-bottom: 2px solid #1a3560 !important;
+            font-weight: 600 !important;
         }
         .stTabs [data-baseweb="tab"]:hover:not([aria-selected="true"]) {
-            background: #EBF0F8 !important; color: #0C2D6B !important;
+            color: #1a3560 !important;
+            background: transparent !important;
         }
 
         /* ── buttons ──────────────────────────────────── */
-        .stButton>button {
-            background: #0C2D6B; color: #FFFFFF;
-            border: none; border-radius: 5px;
-            font-weight: 600; font-size: 0.82rem;
+        /* Buscar - primary */
+        [data-testid="stSidebar"] button[kind="primary"],
+        [data-testid="stSidebar"] [data-testid="stFormSubmitButton"] button {
+            background: #1a3560 !important;
+            color: #FFFFFF !important;
+            border: none !important;
+            border-radius: 5px !important;
+            font-weight: 600 !important;
+            font-size: 0.82rem !important;
         }
-        .stButton>button:hover { background: #1E5BB0; }
+        [data-testid="stSidebar"] button[kind="primary"]:hover,
+        [data-testid="stSidebar"] [data-testid="stFormSubmitButton"] button:hover {
+            background: #162d56 !important;
+        }
+        /* Card buttons - secondary (sidebar results) */
+        [data-testid="stSidebar"] button[kind="secondary"] {
+            background: #FFFFFF !important;
+            border: 1px solid #dee2e6 !important;
+            border-radius: 6px !important;
+            padding: 10px 14px 8px !important;
+            text-align: left !important;
+            width: 100% !important;
+            height: auto !important;
+            min-height: 64px !important;
+            margin-bottom: 4px !important;
+            display: flex !important;
+            align-items: flex-start !important;
+        }
+        [data-testid="stSidebar"] button[kind="secondary"]:hover {
+            border-color: #1a3560 !important;
+            box-shadow: 0 2px 6px rgba(26,53,96,0.12) !important;
+            background: #f0f4ff !important;
+        }
+        /* Primeira linha: título (negrito, azul escuro) */
+        [data-testid="stSidebar"] button[kind="secondary"] p {
+            white-space: pre-line !important;
+            text-align: left !important;
+            margin: 0 !important;
+            font-size: 0.74rem !important;
+            color: #6c757d !important;
+            font-weight: 400 !important;
+            line-height: 1.5 !important;
+        }
+        [data-testid="stSidebar"] button[kind="secondary"] p::first-line {
+            font-size: 0.88rem !important;
+            font-weight: 700 !important;
+            color: #1a3560 !important;
+        }
+        /* Generic buttons fora do sidebar */
+        .stButton>button {
+            background: #FFFFFF;
+            color: #495057;
+            border: 1px solid #ced4da;
+            border-radius: 5px;
+            font-weight: 500;
+            font-size: 0.82rem;
+        }
+        .stButton>button:hover {
+            background: #f8f9fa;
+            border-color: #adb5bd;
+            color: #212529;
+        }
+        /* Metric btn estático (não-clicável) */
+        .metric-btn-static {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            background: #FFFFFF;
+            color: #495057;
+            border: 1px solid #ced4da;
+            border-radius: 5px;
+            font-weight: 500;
+            font-size: 0.82rem;
+            padding: 0.45rem 1rem;
+            box-sizing: border-box;
+            min-height: 38px;
+            user-select: none;
+            margin: 0;
+        }
+        /* Remove margens do wrapper stMarkdownContainer ao redor do card estático */
+        [data-testid="stMarkdownContainer"]:has(.metric-btn-static) {
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 0;
+        }
+        [data-testid="stMarkdownContainer"]:has(.metric-btn-static) .metric-btn-static {
+            line-height: normal;
+        }
 
         /* ── scrollbar ────────────────────────────────── */
         ::-webkit-scrollbar { width: 5px; height: 5px; }
-        ::-webkit-scrollbar-track { background: #F4F5F7; }
-        ::-webkit-scrollbar-thumb { background: #0C2D6B; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: #F26522; }
+        ::-webkit-scrollbar-track { background: #F8F9FA; }
+        ::-webkit-scrollbar-thumb { background: #ced4da; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #adb5bd; }
 
         /* ── misc ─────────────────────────────────────── */
-        hr { border-color: #E2E5EA; }
+        hr { border-color: #dee2e6; }
         #MainMenu { visibility: hidden; }
         footer { visibility: hidden; }
         header { visibility: hidden; }
@@ -265,11 +347,29 @@ def _inject_css() -> None:
         .empty-state {
             text-align: center;
             padding: 3rem 2rem;
-            color: #6B7280;
+            color: #6c757d;
         }
         .empty-state-icon  { font-size: 3rem; margin-bottom: 1rem; }
-        .empty-state-title { font-size: 1.1rem; font-weight: 700; color: #0C2D6B; margin-bottom: 0.5rem; }
+        .empty-state-title { font-size: 1.1rem; font-weight: 600; color: #1a3560; margin-bottom: 0.5rem; }
         .empty-state-text  { font-size: 0.85rem; }
+
+        /* ── metric detail panel ──────────────────────── */
+        .metric-detail-panel {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin-bottom: 1rem;
+        }
+        .metric-detail-title {
+            font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.8px; color: #6c757d; margin-bottom: 8px;
+        }
+        .metric-detail-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -295,12 +395,18 @@ def _get_spanner_database():
 
 
 def _run_query(sql: str, params: dict | None = None, types: dict | None = None) -> list[dict]:
-    """Executa uma query no Spanner e retorna lista de dicts."""
+    """Executa uma query no Spanner e retorna lista de dicts.
+
+    Nota: o SDK do Spanner só popula results.fields (metadados) após a iteração
+    completa do StreamedResultSet. Por isso consumimos todas as linhas com list()
+    antes de acessar fields, evitando o erro 'NoneType has no attribute row_type'.
+    """
     db = _get_spanner_database()
     with db.snapshot() as snap:
         results = snap.execute_sql(sql, params=params or {}, param_types=types or {})
+        rows = list(results)          # consome o stream → popula results.fields
         fields = [f.name for f in results.fields]
-        return [dict(zip(fields, row)) for row in results]
+        return [dict(zip(fields, row)) for row in rows]
 
 
 # ─── Queries de Busca ─────────────────────────────────────────────────────────
@@ -361,13 +467,13 @@ def load_process_detail(n0_id: str) -> dict:
             pr.id    AS n2_id,   pr.nome  AS n2_nome,
             ta.id    AS n3_id,   ta.nome  AS n3_nome,
             et.id    AS n4_id,   et.nome  AS n4_nome,
-            at.id    AS n5_id,
-            at.descricao,
-            at.entradas,
-            at.saidas,
-            at.sistemas_envolvidos,
-            at.kpis,
-            at.oportunidades_melhoria
+            atr.id    AS n5_id,
+            atr.descricao,
+            atr.entradas,
+            atr.saidas,
+            atr.sistemas_envolvidos,
+            atr.kpis,
+            atr.oportunidades_melhoria
         FROM N0_Frente f
         JOIN Edge_Has_N1 e1  ON f.id     = e1.n0_id
         JOIN N1_MacroProcesso mp ON e1.n1_id = mp.id
@@ -377,8 +483,8 @@ def load_process_detail(n0_id: str) -> dict:
         JOIN N3_Tarefa ta    ON e3.n3_id = ta.id
         JOIN Edge_Has_N4 e4  ON ta.id    = e4.n3_id
         JOIN N4_Etapa et     ON e4.n4_id = et.id
-        LEFT JOIN Edge_Has_N5 e5  ON et.id    = e5.n4_id
-        LEFT JOIN N5_Atributos at ON e5.n5_id = at.id
+        LEFT JOIN Edge_Has_N5 e5   ON et.id    = e5.n4_id
+        LEFT JOIN N5_Atributos atr ON e5.n5_id = atr.id
         WHERE f.id = @n0_id
         ORDER BY mp.nome, pr.nome, ta.nome, et.nome
     """
@@ -432,81 +538,22 @@ def load_process_detail(n0_id: str) -> dict:
     }
 
 
-def load_mermaid(n0_id: str) -> str | None:
-    """Carrega o script Mermaid para o N0 selecionado via N2_Mermaid.
-
-    Navega pelo grafo: N0_Frente → Edge_Has_N1 → N1_MacroProcesso →
-    Edge_Has_N2 → N2_Processo → N2_Mermaid.
-    Retorna o primeiro script encontrado (todos os N2 do mesmo documento
-    compartilham o mesmo script Mermaid).
-    """
+def load_mermaid(n2_id: str) -> str | None:
+    """Carrega o script Mermaid associado ao N2_Processo selecionado."""
     from google.cloud.spanner_v1 import param_types
 
-    sql = """
-        SELECT nm.mermaid_script
-        FROM N0_Frente f
-        JOIN Edge_Has_N1 e1   ON f.id    = e1.n0_id
-        JOIN N1_MacroProcesso mp ON e1.n1_id = mp.id
-        JOIN Edge_Has_N2 e2   ON mp.id   = e2.n1_id
-        JOIN N2_Processo pr   ON e2.n2_id = pr.id
-        JOIN N2_Mermaid nm    ON pr.id   = nm.n2_id
-        WHERE f.id = @n0_id
-        LIMIT 1
-    """
     rows = _run_query(
-        sql,
-        params={"n0_id": n0_id},
-        types={"n0_id": param_types.STRING},
+        "SELECT mermaid_script FROM N2_Mermaid WHERE n2_id = @n2_id",
+        params={"n2_id": n2_id},
+        types={"n2_id": param_types.STRING},
     )
     return rows[0]["mermaid_script"] if rows else None
-
-
-def _fetch_mermaid_image_bytes(script: str) -> bytes | None:
-    """Renderiza o script Mermaid como PNG via mermaid.ink (mesmo mecanismo do PDF).
-
-    Aplica _normalise_mermaid antes da codificação para normalizar quebras de
-    linha dentro de labels (causa comum de 'Syntax error in text').
-    Codifica o script em base64, chama https://mermaid.ink/img/{base64} e
-    retorna os bytes da imagem PNG, ou None em caso de erro.
-    """
-    import base64
-    import sys
-    import urllib.request
-
-    # Remove code fences se presentes
-    s = script.strip()
-    if s.startswith("```mermaid"):
-        s = s[len("```mermaid"):].strip()
-    if s.startswith("```"):
-        s = s[3:].strip()
-    if s.endswith("```"):
-        s = s[:-3].strip()
-
-    # Normaliza quebras de linha dentro de labels (evita 'Syntax error in text')
-    s = _normalise_mermaid(s)
-
-    try:
-        b64 = base64.urlsafe_b64encode(s.encode("utf-8")).decode("ascii")
-        url = f"https://mermaid.ink/img/{b64}"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "image/png,image/*,*/*",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = resp.read()
-        return data if len(data) > 100 else None
-    except Exception as _e:
-        print(f"[Mermaid][ERROR] _fetch_mermaid_image_bytes falhou: {_e}", file=sys.stderr)
-        return None
 
 
 # ─── Helpers de renderização ──────────────────────────────────────────────────
 def _tags_html(items: list, css_class: str = "detail-tag") -> str:
     if not items:
-        return '<span style="color:#6B7280;font-size:0.8rem;font-style:italic;">Não informado</span>'
+        return '<span style="color:#6c757d;font-size:0.8rem;font-style:italic;">Não informado</span>'
     return "".join(f'<span class="{css_class}">{item}</span>' for item in items)
 
 
@@ -532,7 +579,7 @@ def _render_mermaid_html(script: str) -> str:
     if script.endswith("```"):
         script = script[:-3].strip()
 
-    # Normaliza quebras de linha dentro de labels
+    # Normaliza quebras de linha dentro de labels (causa de 'Syntax error in text')
     script = _normalise_mermaid(script)
 
     return f"""<!DOCTYPE html>
@@ -554,7 +601,7 @@ def _render_mermaid_html(script: str) -> str:
             startOnLoad: true,
             theme: 'base',
             themeVariables: {{
-                primaryColor: '#0C2D6B',
+                primaryColor: '#1a3560',
                 primaryTextColor: '#FFFFFF',
                 primaryBorderColor: '#071A40',
                 lineColor: '#1E5BB0',
@@ -567,21 +614,77 @@ def _render_mermaid_html(script: str) -> str:
 </body>
 </html>"""
 
+# ─── Renderização Mermaid ────────────────────────────────────────────────────
+def _fetch_mermaid_image_bytes(script: str) -> bytes | None:
+    """Renderiza o script Mermaid como PNG via mermaid.ink.
+
+    Aplica _normalise_mermaid para corrigir quebras de linha dentro de labels,
+    codifica em base64 e chama https://mermaid.ink/img/{base64}.
+    Retorna bytes PNG ou None em caso de falha.
+    """
+    import base64
+    import urllib.request
+
+    s = script.strip()
+    if s.startswith("```mermaid"):
+        s = s[len("```mermaid"):].strip()
+    if s.startswith("```"):
+        s = s[3:].strip()
+    if s.endswith("```"):
+        s = s[:-3].strip()
+
+    s = _normalise_mermaid(s)
+
+    try:
+        b64 = base64.urlsafe_b64encode(s.encode("utf-8")).decode("ascii")
+        url = f"https://mermaid.ink/img/{b64}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "image/png,image/*,*/*"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = resp.read()
+        return data if len(data) > 100 else None
+    except Exception as _e:
+        import sys
+        print(f"[Mermaid][ERROR] mermaid.ink falhou: {_e}", file=sys.stderr)
+        return None
 
 # ─── Renderização do painel principal ────────────────────────────────────────
 def render_process_detail(detail: dict) -> None:
     """Renderiza o painel principal com os detalhes do processo selecionado."""
 
+    # Coleta nomes dos N1 e contagem de sistemas para o banner
+    n1_nomes = [n1["nome"] for n1 in detail["hierarquia"].values()]
+    n1_txt   = ", ".join(n1_nomes[:3])
+    if len(n1_nomes) > 3:
+        n1_txt += f" +{len(n1_nomes) - 3} mais"
+
+    all_sistemas: set = set()
+    for _n1 in detail["hierarquia"].values():
+        for _n2 in _n1["n2s"].values():
+            for _n3 in _n2["n3s"].values():
+                for _n4 in _n3["n4s"].values():
+                    for _s in (_n4.get("sistemas_envolvidos") or []):
+                        if _s:
+                            all_sistemas.add(_s)
+    total_sistemas = len(all_sistemas)
+
+    meta_parts = []
+    if n1_txt:
+        meta_parts.append(n1_txt)
+    meta_parts.append(f"📋 {detail['total_tarefas']} tarefas")
+    if total_sistemas > 0:
+        meta_parts.append(f"🖥️ {total_sistemas} sistemas")
+    meta_line2 = "  ·  ".join(meta_parts)
+
     # Header do processo
     st.markdown(
         f"""
         <div class="proc-header">
-            <div class="proc-header-title">🏛️ {detail["frente_nome"]}</div>
+            <div class="proc-header-title">🏗️ {detail["frente_nome"]}</div>
             <div class="proc-header-meta">
-                <span>⚙️ {detail["total_macros"]} Macro Processos</span>
-                <span>🔄 {detail["total_processos"]} Processos</span>
-                <span>📋 {detail["total_tarefas"]} Tarefas</span>
-                <span>▶️ {detail["total_etapas"]} Etapas</span>
+                <span>{meta_line2}</span>
             </div>
         </div>
         """,
@@ -590,6 +693,26 @@ def render_process_detail(detail: dict) -> None:
 
     # Abas
     tab_passo, tab_fluxo = st.tabs(["📋  Passo a Passo", "🔀  Diagrama de Fluxo"])
+
+    # Se o usuário clicou num card da sidebar enquanto estava na aba Diagrama,
+    # injeta JS que clica na primeira aba (Passo a Passo) e consome o flag.
+    if st.session_state.pop("switch_to_passo_tab", False):
+        components.html(
+            """<script>
+            setTimeout(function() {
+                try {
+                    // Tenta seletores em ordem de especificidade
+                    var tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
+                    if (!tabs || tabs.length === 0)
+                        tabs = window.parent.document.querySelectorAll('[data-testid="stTab"]');
+                    if (!tabs || tabs.length === 0)
+                        tabs = window.parent.document.querySelectorAll('[role="tab"]');
+                    if (tabs && tabs.length > 0) tabs[0].click();
+                } catch(e) {}
+            }, 300);
+            </script>""",
+            height=1,
+        )
 
     # ── ABA: Passo a Passo ────────────────────────────────────────────────────
     with tab_passo:
@@ -645,7 +768,7 @@ def render_process_detail(detail: dict) -> None:
                                             <span class="step-title" style="margin:0;">{n4_data["nome"]}</span>
                                         </div>
                                         <div style="margin-bottom:10px;">
-                                            <div style="font-size:0.65rem;color:#6B7280;font-weight:600;
+                                            <div style="font-size:0.65rem;color:#6c757d;font-weight:600;
                                                         letter-spacing:0.8px;text-transform:uppercase;margin-bottom:4px;">
                                                 Descrição
                                             </div>
@@ -653,29 +776,29 @@ def render_process_detail(detail: dict) -> None:
                                         </div>
                                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
                                             <div>
-                                                <div style="font-size:0.62rem;color:#6B7280;font-weight:600;
+                                                <div style="font-size:0.62rem;color:#6c757d;font-weight:600;
                                                             text-transform:uppercase;margin-bottom:3px;">Entradas</div>
                                                 <div>{entradas}</div>
                                             </div>
                                             <div>
-                                                <div style="font-size:0.62rem;color:#6B7280;font-weight:600;
+                                                <div style="font-size:0.62rem;color:#6c757d;font-weight:600;
                                                             text-transform:uppercase;margin-bottom:3px;">Saídas</div>
                                                 <div>{saidas}</div>
                                             </div>
                                         </div>
                                         <div style="margin-bottom:6px;">
-                                            <div style="font-size:0.62rem;color:#6B7280;font-weight:600;
+                                            <div style="font-size:0.62rem;color:#6c757d;font-weight:600;
                                                         text-transform:uppercase;margin-bottom:3px;">Sistemas Envolvidos</div>
                                             <div>{sistemas}</div>
                                         </div>
                                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                                             <div>
-                                                <div style="font-size:0.62rem;color:#6B7280;font-weight:600;
+                                                <div style="font-size:0.62rem;color:#6c757d;font-weight:600;
                                                             text-transform:uppercase;margin-bottom:3px;">KPIs</div>
                                                 <div>{kpis}</div>
                                             </div>
                                             <div>
-                                                <div style="font-size:0.62rem;color:#6B7280;font-weight:600;
+                                                <div style="font-size:0.62rem;color:#6c757d;font-weight:600;
                                                             text-transform:uppercase;margin-bottom:3px;">Oportunidades de Melhoria</div>
                                                 <div>{oports}</div>
                                             </div>
@@ -685,42 +808,54 @@ def render_process_detail(detail: dict) -> None:
                                     unsafe_allow_html=True,
                                 )
                         st.markdown(
-                            "<hr style='margin:6px 0;border-color:#E2E5EA;'>",
+                            "<hr style='margin:6px 0;border-color:#dee2e6;'>",
                             unsafe_allow_html=True,
                         )
 
     # ── ABA: Diagrama de Fluxo ────────────────────────────────────────────────
     with tab_fluxo:
         st.markdown(
-            '<div class="section-title">Diagrama de Fluxo (Mermaid)</div>',
+            '<div class="section-title">Diagrama de Fluxo por Processo (N2)</div>',
             unsafe_allow_html=True,
         )
 
-        with st.spinner("Carregando diagrama…"):
-            mermaid_script = load_mermaid(detail["n0_id"])
+        hierarquia = detail["hierarquia"]
+        found_any = False
 
-        if mermaid_script:
-            with st.spinner("Renderizando imagem do diagrama…"):
-                img_bytes = _fetch_mermaid_image_bytes(mermaid_script)
+        for n1_data in hierarquia.values():
+            for n2_id, n2_data in n1_data["n2s"].items():
+                with st.spinner(f"Carregando diagrama de '{n2_data['nome']}'…"):
+                    mermaid_script = load_mermaid(n2_id)
 
-            if img_bytes:
-                st.image(
-                    img_bytes,
-                    use_container_width=True,
-                    caption=f"Diagrama de Fluxo — {detail['frente_nome']}",
-                )
-            else:
-                # Fallback: renderiza via CDN caso mermaid.ink não responda
-                st.warning(
-                    "Não foi possível obter a imagem via mermaid.ink. "
-                    "Exibindo renderização alternativa via CDN.",
-                    icon="⚠️",
-                )
-                components.html(_render_mermaid_html(mermaid_script), height=900, scrolling=True)
-        else:
+                if mermaid_script:
+                    found_any = True
+                    st.markdown(
+                        f'<div style="font-size:0.82rem;font-weight:700;color:#1a3560;'
+                        f'margin:12px 0 4px;">'
+                        f'<span class="level-badge badge-n2">Processo</span>'
+                        f'{n2_data["nome"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    img_bytes = _fetch_mermaid_image_bytes(mermaid_script)
+                    if img_bytes:
+                        _, col_img, _ = st.columns([2, 2, 2])
+                        with col_img:
+                            st.image(
+                                img_bytes,
+                                use_container_width=True,
+                            )
+                    else:
+                        # Fallback CDN caso mermaid.ink não responda
+                        components.html(
+                            _render_mermaid_html(mermaid_script),
+                            height=600,
+                            scrolling=True,
+                        )
+
+        if not found_any:
             st.info(
-                "Nenhum diagrama Mermaid encontrado para este processo. "
-                "Execute o agente para gerar o diagrama.",
+                "Nenhum diagrama Mermaid encontrado. "
+                "Execute o agente para gerar os diagramas.",
                 icon="ℹ️",
             )
 
@@ -729,15 +864,62 @@ def render_process_detail(detail: dict) -> None:
         '<div class="section-title" style="margin-top:1.5rem;">Resumo do Processo</div>',
         unsafe_allow_html=True,
     )
-    metrics_html = (
-        '<div class="metric-row">'
-        + _metric_html("⚙️", detail["total_macros"],    "Macro Processos")
-        + _metric_html("🔄", detail["total_processos"], "Processos")
-        + _metric_html("📋", detail["total_tarefas"],   "Tarefas")
-        + _metric_html("▶️", detail["total_etapas"],    "Total de Etapas", accent=True)
-        + "</div>"
-    )
-    st.markdown(metrics_html, unsafe_allow_html=True)
+
+    # Extrair listas de nomes por nível
+    hie = detail["hierarquia"]
+    n1_nomes = sorted({n1["nome"] for n1 in hie.values()})
+    n2_nomes = sorted({n2["nome"] for n1 in hie.values() for n2 in n1["n2s"].values()})
+    n3_nomes = sorted({n3["nome"] for n1 in hie.values() for n2 in n1["n2s"].values() for n3 in n2["n3s"].values()})
+    n4_nomes = sorted({n4["nome"] for n1 in hie.values() for n2 in n1["n2s"].values() for n3 in n2["n3s"].values() for n4 in n3["n4s"].values()})
+
+    metrics_def = [
+        ("m_macros",    "⚙️",  detail["total_macros"],    "Macro Processos", n1_nomes,  True),
+        ("m_processos", "🔄",  detail["total_processos"], "Processos",       n2_nomes,  True),
+        ("m_tarefas",   "📋",  detail["total_tarefas"],   "Tarefas",         n3_nomes,  True),
+        ("m_etapas",    "▶️", detail["total_etapas"],    "Total de Etapas", n4_nomes,  False),
+    ]
+
+    if "active_metric" not in st.session_state:
+        st.session_state["active_metric"] = None
+
+    cols = st.columns(4, vertical_alignment="center")
+    for col, (key, emoji, value, label, _, clickable) in zip(cols, metrics_def):
+        with col:
+            if clickable:
+                st.markdown('<div class="metric-btn">', unsafe_allow_html=True)
+                if st.button(
+                    f"{value}\n{emoji}  {label}",
+                    key=f"metric_{key}_{detail['n0_id']}",
+                    use_container_width=True,
+                ):
+                    st.session_state["active_metric"] = (
+                        None if st.session_state["active_metric"] == key else key
+                    )
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div class="metric-btn-static">{value}&nbsp;{emoji}&nbsp;&nbsp;{label}</div>',
+                    unsafe_allow_html=True,
+                )
+
+    # Painel expansivo abaixo dos cards
+    active = st.session_state.get("active_metric")
+    if active:
+        match = next((m for m in metrics_def if m[0] == active), None)
+        if match:
+            _, _, _, label, nomes, _ = match
+            tags = "".join(
+                f'<span class="detail-tag" style="margin:2px 3px;">{n}</span>'
+                for n in nomes
+            )
+            st.markdown(
+                f'<div class="metric-detail-panel">'
+                f'<div class="metric-detail-title">{label} ({len(nomes)})</div>'
+                f'<div class="metric-detail-tags">{tags}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
@@ -760,6 +942,8 @@ def main() -> None:
         st.session_state["selected_n0_nome"] = None
     if "process_detail" not in st.session_state:
         st.session_state["process_detail"] = None
+    if "switch_to_passo_tab" not in st.session_state:
+        st.session_state["switch_to_passo_tab"] = False
 
     # Hero Header
     st.markdown(
@@ -778,9 +962,9 @@ def main() -> None:
     st.sidebar.markdown(
         '<div class="sidebar-header">'
         '<div style="font-size:0.65rem;font-weight:700;letter-spacing:1px;'
-        'text-transform:uppercase;color:#93B8E8;margin-bottom:4px;">Cliente</div>'
-        '<div style="font-size:1rem;font-weight:800;color:#FFFFFF;">Processos AS-IS</div>'
-        '<div style="font-size:0.75rem;color:#93B8E8;margin-top:2px;">Base de Conhecimento</div>'
+        'text-transform:uppercase;color:#a8c0e0;margin-bottom:4px;">Cliente</div>'
+        '<div style="font-size:1rem;font-weight:700;color:#FFFFFF;">Processos AS-IS</div>'
+        '<div style="font-size:0.75rem;color:#a8c0e0;margin-top:2px;">Base de Conhecimento</div>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -789,16 +973,15 @@ def main() -> None:
         '<div class="section-title">🔍 Pesquisar Processos</div>',
         unsafe_allow_html=True,
     )
-    termo = st.sidebar.text_input(
-        "Buscar por nome",
-        placeholder="Digite parte do nome…",
-        label_visibility="collapsed",
-        key="search_input",
-    )
+    with st.sidebar.form(key="search_form", border=False):
+        termo = st.text_input(
+            "Buscar por nome",
+            placeholder="Digite parte do nome…",
+            label_visibility="collapsed",
+        )
+        buscar_clicked = st.form_submit_button("Buscar", use_container_width=True, type="primary")
 
-    buscar_clicked = st.sidebar.button("Buscar", use_container_width=True)
-
-    # Executa busca ao clicar
+    # Executa busca ao clicar ou pressionar Enter
     if buscar_clicked:
         if not termo.strip():
             st.sidebar.warning("Digite ao menos um caractere para buscar.")
@@ -820,7 +1003,7 @@ def main() -> None:
     resultados = st.session_state.get("search_results", [])
     if resultados:
         st.sidebar.markdown(
-            f'<div style="font-size:0.72rem;color:#6B7280;margin:8px 0 4px;">'
+            f'<div style="font-size:0.72rem;color:#6c757d;margin:8px 0 4px;">'
             f'{len(resultados)} resultado(s) encontrado(s)</div>',
             unsafe_allow_html=True,
         )
@@ -829,28 +1012,21 @@ def main() -> None:
             macro_txt   = res.get("macro_processos") or "—"
             total_taref = res.get("total_tarefas") or 0
 
-            st.sidebar.markdown(
-                f"""
-                <div class="proc-card">
-                    <div class="proc-card-title">{res["frente_nome"]}</div>
-                    <div class="proc-card-sub">{macro_txt}</div>
-                    <span class="proc-card-badge">📋 {total_taref} tarefas</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            label = f"{res['frente_nome']}\n{macro_txt}  ·  📋 {total_taref} tarefas"
 
             if st.sidebar.button(
-                "Abrir",
-                key=f"abrir_{res['n0_id']}_{idx}",
+                label,
+                key=f"card_{res['n0_id']}_{idx}",
                 use_container_width=True,
             ):
                 with st.spinner(f"Carregando {res['frente_nome']}…"):
                     try:
                         detail = load_process_detail(res["n0_id"])
-                        st.session_state["selected_n0_id"]   = res["n0_id"]
-                        st.session_state["selected_n0_nome"] = res["frente_nome"]
-                        st.session_state["process_detail"]   = detail
+                        st.session_state["selected_n0_id"]       = res["n0_id"]
+                        st.session_state["selected_n0_nome"]     = res["frente_nome"]
+                        st.session_state["process_detail"]       = detail
+                        st.session_state["active_metric"]        = None
+                        st.session_state["switch_to_passo_tab"] = True
                         st.rerun()
                     except Exception as exc:
                         st.sidebar.error(f"Erro ao carregar processo: {exc}")
@@ -868,7 +1044,7 @@ def main() -> None:
                 <div class="empty-state-title">Nenhum processo selecionado</div>
                 <div class="empty-state-text">
                     Use a caixa de pesquisa na barra lateral para buscar um processo<br>
-                    e clique em <strong>Abrir</strong> para visualizar os detalhes.
+                    e clique no resultado para visualizar os detalhes.
                 </div>
             </div>
             """,

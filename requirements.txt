@@ -8,4 +8,5 @@ openpyxl
 google-cloud-firestore
 google-cloud-spanner
 google-cloud-logging
+streamlit
 python-docx

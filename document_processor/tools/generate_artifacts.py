@@ -318,8 +318,16 @@ def _extract_mermaid_block(markdown: str) -> str | None:
     """Extrai o conteúdo do primeiro bloco ```mermaid...``` presente no Markdown.
 
     Retorna apenas o conteúdo interno (sem as code fences), ou None se não encontrar.
+
+    Notas de robustez:
+    - Normaliza \r\n → \n antes do match para suportar texto gerado no Windows /
+      devolvido pelo LLM com quebras de linha CRLF.
+    - Abre com [^\n]* (em vez de \s*) para não consumir a quebra de linha
+      obrigatória após o token "mermaid".
+    - Fecha com \n\s*``` para tolerar espaços antes da fence de fechamento.
     """
-    match = re.search(r'```mermaid\s*\n(.*?)\n```', markdown, re.DOTALL)
+    normalised = markdown.replace('\r\n', '\n').replace('\r', '\n')
+    match = re.search(r'```mermaid[^\n]*\n(.*?)\n\s*```', normalised, re.DOTALL)
     if match:
         return match.group(1).strip()
     return None
@@ -327,10 +335,11 @@ def _extract_mermaid_block(markdown: str) -> str | None:
 
 async def save_mermaid_from_state(tool_context: ToolContext) -> Dict[str, Any]:
     """
-    Extrai o script Mermaid do state (pdf_markdown), identifica os N0s distintos
+    Extrai o script Mermaid do state (pdf_markdown), identifica os N2s distintos
     do state (pdf_input_json) e persiste no Spanner via upsert idempotente.
 
-    Tabelas afetadas: N0_Mermaid + Edge_Has_Mermaid.
+    Cardinalidade: 1 script Mermaid por N2_Processo (PK garante unicidade).
+    Tabelas afetadas: N2_Mermaid + Edge_Has_Mermaid.
 
     Esta tool é determinística: não depende do LLM para ser chamada.
     Deve ser invocada pelo document_processor após generate_pdf_from_state.
@@ -341,48 +350,53 @@ async def save_mermaid_from_state(tool_context: ToolContext) -> Dict[str, Any]:
     # 1. Extrai bloco Mermaid do Markdown gerado pelo pdf_subagent
     markdown = tool_context.state.get("pdf_markdown", "")
     if not markdown or not markdown.strip():
-        return {
-            "status": "error",
-            "message": "State 'pdf_markdown' está vazio. O pdf_subagent não gerou o Markdown.",
-        }
+        msg = "State 'pdf_markdown' está vazio. O pdf_subagent não gerou o Markdown."
+        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        return {"status": "error", "message": msg}
 
     mermaid_script = _extract_mermaid_block(markdown)
     if not mermaid_script:
-        return {
-            "status": "error",
-            "message": "Nenhum bloco ```mermaid encontrado no pdf_markdown.",
-        }
+        msg = "Nenhum bloco ```mermaid encontrado no pdf_markdown."
+        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        return {"status": "error", "message": msg}
 
-    # 2. Extrai N0s distintos do JSON gerado pelo as_is_agent
+    # 2. Extrai triplas (N0, N1, N2) distintas do JSON gerado pelo as_is_agent
+    #    O n2_id é UUID v5 de (n0_nome|n1_nome|n2_nome) — mesmo algoritmo de
+    #    _persistir_no_spanner — garantindo que a FK N2_Mermaid → N2_Processo
+    #    seja satisfeita.
     raw_json = tool_context.state.get("pdf_input_json", "")
     json_str = _extract_json_from_text(raw_json)
     if not json_str:
-        return {
-            "status": "error",
-            "message": "State 'pdf_input_json' inválido — não foi possível extrair N0s.",
-        }
+        msg = "State 'pdf_input_json' inválido — não foi possível extrair N2s."
+        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        return {"status": "error", "message": msg}
 
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError as e:
-        return {"status": "error", "message": f"JSON inválido ao extrair N0s: {e}"}
+        msg = f"JSON inválido ao extrair N2s: {e}"
+        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        return {"status": "error", "message": msg}
 
-    n0_nomes = sorted({
-        (r.get("N0") or "").strip()
+    n2_paths = sorted({
+        (
+            (r.get("N0") or "").strip(),
+            (r.get("N1") or "").strip(),
+            (r.get("N2") or "").strip(),
+        )
         for r in data.get("rows", [])
-        if (r.get("N0") or "").strip()
+        if (r.get("N2") or "").strip()
     })
 
-    if not n0_nomes:
-        return {
-            "status": "error",
-            "message": "Nenhum N0 encontrado no JSON para persistir o Mermaid.",
-        }
+    if not n2_paths:
+        msg = "Nenhum N2 encontrado no JSON para persistir o Mermaid."
+        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        return {"status": "error", "message": msg}
 
     # 3. Persiste no Spanner (síncrono via thread para não bloquear o event loop)
     try:
         mensagem = await asyncio.wait_for(
-            asyncio.to_thread(_upsert_mermaid_sync, n0_nomes, mermaid_script),
+            asyncio.to_thread(_upsert_mermaid_sync, n2_paths, mermaid_script),
             timeout=_MERMAID_TIMEOUT,
         )
         return {"status": "success", "message": mensagem}
@@ -453,6 +467,47 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
         filename="documento_processo.pdf",
         artifact=artifact_part,
     )
+
+    # ── Persistência do Mermaid no Spanner (side-effect garantido) ───────────
+    # Executado aqui para garantir persistência independentemente do LLM
+    # chamar save_mermaid_from_state como passo separado.
+    mermaid_status = "não realizada"
+    try:
+        mermaid_script = _extract_mermaid_block(markdown_content)
+        if not mermaid_script:
+            mermaid_status = "bloco ```mermaid não encontrado no Markdown"
+            print(f"[Spanner][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
+        else:
+            raw_json = tool_context.state.get("pdf_input_json", "")
+            json_str = _extract_json_from_text(raw_json)
+            if not json_str:
+                mermaid_status = "pdf_input_json ausente ou inválido"
+                print(f"[Spanner][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
+            else:
+                data = json.loads(json_str)
+                n2_paths = sorted({
+                    (
+                        (r.get("N0") or "").strip(),
+                        (r.get("N1") or "").strip(),
+                        (r.get("N2") or "").strip(),
+                    )
+                    for r in data.get("rows", [])
+                    if (r.get("N2") or "").strip()
+                })
+                if not n2_paths:
+                    mermaid_status = "nenhum N2 encontrado no JSON"
+                    print(f"[Spanner][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
+                else:
+                    mermaid_status = await asyncio.wait_for(
+                        asyncio.to_thread(_upsert_mermaid_sync, n2_paths, mermaid_script),
+                        timeout=_MERMAID_TIMEOUT,
+                    )
+    except asyncio.TimeoutError:
+        mermaid_status = f"timeout após {_MERMAID_TIMEOUT}s"
+        print(f"[Spanner][Mermaid][ERROR] {mermaid_status}", file=sys.stderr)
+    except Exception as _e:
+        mermaid_status = f"erro: {_e}"
+        print(f"[Spanner][Mermaid][ERROR] {mermaid_status}", file=sys.stderr)
 
     return {
         "status": "success",

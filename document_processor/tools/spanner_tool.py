@@ -379,22 +379,30 @@ async def save_to_spanner_from_state(tool_context: ToolContext) -> str:
 
 # --- Persistência do Mermaid -------------------------------------------------
 
-def _upsert_mermaid_sync(n0_nomes: List[str], mermaid_script: str) -> str:
-    """Faz upsert do script Mermaid para cada N0 no Spanner (síncrono).
+def _upsert_mermaid_sync(n2_paths: List[Tuple[str, str, str]], mermaid_script: str) -> str:
+    """Faz upsert do script Mermaid para cada N2_Processo no Spanner (síncrono).
 
-    Persiste em N0_Mermaid e Edge_Has_Mermaid num único batch.
+    Persiste em N2_Mermaid e Edge_Has_Mermaid num único batch.
     Idempotente via insert_or_update — reprocessamentos sobrescrevem sem duplicar.
     Deve ser chamado via asyncio.to_thread() para não bloquear o event loop.
 
+    A PK de N2_Mermaid é o próprio n2_id, garantindo 1 e somente 1 script
+    por N2_Processo.
+
+    IMPORTANTE: o n2_id é gerado com _make_id(n0_nome, n1_nome, n2_nome),
+    idêntico ao caminho hierárquico usado em _persistir_no_spanner, garantindo
+    que a FK N2_Mermaid → N2_Processo seja satisfeita.
+
     Args:
-        n0_nomes: Lista de nomes de N0 (Frente) para associar ao script.
+        n2_paths: Lista de triplas (n0_nome, n1_nome, n2_nome) que identificam
+                  univocamente cada N2_Processo.
         mermaid_script: Script Mermaid puro (sem code fences).
 
     Returns:
         Mensagem de resumo da operação.
     """
-    if not n0_nomes:
-        return "[Spanner][Mermaid] Nenhum N0 fornecido — persistência ignorada."
+    if not n2_paths:
+        return "[Spanner][Mermaid] Nenhum N2 fornecido — persistência ignorada."
     if not mermaid_script or not mermaid_script.strip():
         return "[Spanner][Mermaid] Script Mermaid vazio — persistência ignorada."
 
@@ -402,28 +410,29 @@ def _upsert_mermaid_sync(n0_nomes: List[str], mermaid_script: str) -> str:
 
     mermaid_rows: List[Tuple] = []
     edge_rows: List[Tuple] = []
-    for n0_nome in n0_nomes:
-        n0_id = _make_id(n0_nome)
-        mermaid_rows.append((n0_id, mermaid_script, spanner.COMMIT_TIMESTAMP))
-        edge_rows.append((n0_id, n0_id))  # mermaid_id == n0_id (mesma PK)
+    for (n0_nome, n1_nome, n2_nome) in n2_paths:
+        # Mesmo algoritmo de _persistir_no_spanner — garante mesmo UUID
+        n2_id = _make_id(n0_nome, n1_nome, n2_nome)
+        mermaid_rows.append((n2_id, mermaid_script, spanner.COMMIT_TIMESTAMP))
+        edge_rows.append((n2_id, n2_id))  # mermaid_id == n2_id (relação 1:1)
 
     with database.batch() as batch:
         batch.insert_or_update(
-            table="N0_Mermaid",
-            columns=["n0_id", "mermaid_script", "gerado_em"],
+            table="N2_Mermaid",
+            columns=["n2_id", "mermaid_script", "gerado_em"],
             values=mermaid_rows,
         )
         batch.insert_or_update(
             table="Edge_Has_Mermaid",
-            columns=["n0_id", "mermaid_id"],
+            columns=["n2_id", "mermaid_id"],
             values=edge_rows,
         )
 
-    nomes_resumo = ", ".join(f"'{n}'" for n in n0_nomes[:5])
-    sufixo = f" ... e mais {len(n0_nomes) - 5}" if len(n0_nomes) > 5 else ""
+    nomes_resumo = ", ".join(f"'{p[2]}'" for p in n2_paths[:5])
+    sufixo = f" ... e mais {len(n2_paths) - 5}" if len(n2_paths) > 5 else ""
     return (
-        f"[Spanner][Mermaid] Script persistido para {len(n0_nomes)} N0(s): "
+        f"[Spanner][Mermaid] Script persistido para {len(n2_paths)} N2(s): "
         f"{nomes_resumo}{sufixo}. "
-        f"Tabelas: N0_Mermaid + Edge_Has_Mermaid "
+        f"Tabelas: N2_Mermaid + Edge_Has_Mermaid "
         f"(database: {_SPANNER_DATABASE}, instância: {_SPANNER_INSTANCE})."
     )
