@@ -17,6 +17,7 @@ from document_processor.tools.generate_artifacts import (
     save_to_firestore_from_state,
     generate_xlsx_from_state,
     generate_pdf_from_state,
+    save_mermaid_from_state,
 )
 from document_processor.tools.spanner_tool import save_to_spanner_from_state
 from logger import get_logger
@@ -175,7 +176,11 @@ root_agent = Agent(
             Chame a tool 'generate_pdf_from_state' SEM PARÂMETROS.
             Guarde a mensagem retornada como <MENSAGEM_PDF>.
 
-        PASSO 10 - Apresentação do resultado:
+        PASSO 10 - Persistência do Mermaid no Spanner (OBRIGATÓRIO — NÃO PULE):
+            Chame a tool 'save_mermaid_from_state' SEM PARÂMETROS.
+            Aguarde o retorno antes de continuar.
+
+        PASSO 11 - Apresentação do resultado:
             Responda ao usuário usando EXATAMENTE o template abaixo.
             Substitua <MENSAGEM_XLSX> pela mensagem LITERAL retornada por generate_xlsx_from_state
             e <MENSAGEM_PDF> pela mensagem LITERAL retornada por generate_pdf_from_state
@@ -193,7 +198,7 @@ root_agent = Agent(
             <MENSAGEM_PDF>
             ---------------------------------------------------------------
 
-            REGRAS CRÍTICAS para o PASSO 8:
+            REGRAS CRÍTICAS para o PASSO 11:
             ✅ Substitua <MENSAGEM_XLSX> pela mensagem LITERAL de generate_xlsx_from_state
             ✅ Substitua <MENSAGEM_PDF> pela mensagem LITERAL de generate_pdf_from_state
             ✅ Preserve cada caractere de cada mensagem (aspas, número de versão, pontuação)
@@ -210,7 +215,7 @@ root_agent = Agent(
             - Integridade: Não modifique a saída lógica das ferramentas.
         ═══════════════════════════════════════════════════════════════════════
     """,
-    tools=[preparar_state_inicial, as_is_agent, save_to_firestore_from_state, save_to_spanner_from_state, pdf_subagent, generate_xlsx_from_state, generate_pdf_from_state],
+    tools=[preparar_state_inicial, as_is_agent, save_to_firestore_from_state, save_to_spanner_from_state, pdf_subagent, generate_xlsx_from_state, generate_pdf_from_state, save_mermaid_from_state],
     before_model_callback=before_model_callback,
     before_tool_callback=_before_tool_cb,
     after_tool_callback=_after_tool_cb,

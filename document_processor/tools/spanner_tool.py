@@ -375,3 +375,55 @@ async def save_to_spanner_from_state(tool_context: ToolContext) -> str:
         msg = f"[Spanner] ERRO ao persistir no Spanner: {e}"
         logger.exception(msg)
         return msg
+
+
+# --- Persistência do Mermaid -------------------------------------------------
+
+def _upsert_mermaid_sync(n0_nomes: List[str], mermaid_script: str) -> str:
+    """Faz upsert do script Mermaid para cada N0 no Spanner (síncrono).
+
+    Persiste em N0_Mermaid e Edge_Has_Mermaid num único batch.
+    Idempotente via insert_or_update — reprocessamentos sobrescrevem sem duplicar.
+    Deve ser chamado via asyncio.to_thread() para não bloquear o event loop.
+
+    Args:
+        n0_nomes: Lista de nomes de N0 (Frente) para associar ao script.
+        mermaid_script: Script Mermaid puro (sem code fences).
+
+    Returns:
+        Mensagem de resumo da operação.
+    """
+    if not n0_nomes:
+        return "[Spanner][Mermaid] Nenhum N0 fornecido — persistência ignorada."
+    if not mermaid_script or not mermaid_script.strip():
+        return "[Spanner][Mermaid] Script Mermaid vazio — persistência ignorada."
+
+    database = _get_database()
+
+    mermaid_rows: List[Tuple] = []
+    edge_rows: List[Tuple] = []
+    for n0_nome in n0_nomes:
+        n0_id = _make_id(n0_nome)
+        mermaid_rows.append((n0_id, mermaid_script, spanner.COMMIT_TIMESTAMP))
+        edge_rows.append((n0_id, n0_id))  # mermaid_id == n0_id (mesma PK)
+
+    with database.batch() as batch:
+        batch.insert_or_update(
+            table="N0_Mermaid",
+            columns=["n0_id", "mermaid_script", "gerado_em"],
+            values=mermaid_rows,
+        )
+        batch.insert_or_update(
+            table="Edge_Has_Mermaid",
+            columns=["n0_id", "mermaid_id"],
+            values=edge_rows,
+        )
+
+    nomes_resumo = ", ".join(f"'{n}'" for n in n0_nomes[:5])
+    sufixo = f" ... e mais {len(n0_nomes) - 5}" if len(n0_nomes) > 5 else ""
+    return (
+        f"[Spanner][Mermaid] Script persistido para {len(n0_nomes)} N0(s): "
+        f"{nomes_resumo}{sufixo}. "
+        f"Tabelas: N0_Mermaid + Edge_Has_Mermaid "
+        f"(database: {_SPANNER_DATABASE}, instância: {_SPANNER_INSTANCE})."
+    )

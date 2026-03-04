@@ -6,7 +6,7 @@
 
 ## Visão Geral da Arquitetura
 
-O sistema é composto por **3 agentes** organizados em hierarquia orquestradora/sub-agente, construídos sobre o **Google ADK (Agent Development Kit)**. O agente raiz (`document_processor`) coordena dois sub-agentes especializados e **três tools determinísticas**, expondo um fluxo end-to-end que transforma documentos de processos de negócio em planilhas Excel e documentos PDF.
+O sistema é composto por **3 agentes** organizados em hierarquia orquestradora/sub-agente, construídos sobre o **Google ADK (Agent Development Kit)**. O agente raiz (`document_processor`) coordena dois sub-agentes especializados e **quatro tools determinísticas**, expondo um fluxo end-to-end que transforma documentos de processos de negócio em planilhas Excel, documentos PDF e scripts Mermaid persistidos no Spanner.
 
 ```
 document_processor  (agente raiz / orquestrador)
@@ -15,7 +15,8 @@ document_processor  (agente raiz / orquestrador)
 ├── save_to_firestore_from_state    (tool determinística: JSON do state → Firestore)
 ├── generate_xlsx_from_state        (tool determinística: JSON → Excel)
 ├── agente_gerador_pdf_md           (sub-agente via AgentTool: JSON → Markdown)
-└── generate_pdf_from_state         (tool determinística: Markdown → PDF)
+├── generate_pdf_from_state         (tool determinística: Markdown → PDF)
+└── save_mermaid_from_state         (tool determinística: Mermaid → Spanner N0_Mermaid)
 ```
 
 **Modelos LLM utilizados:**
@@ -48,8 +49,9 @@ Atua como ponto de entrada do sistema e especialista sênior em BPM. Recebe arqu
 | 4 | `generate_xlsx_from_state` | Tool determinística | `document_processor/tools/generate_artifacts.py` | Lê `state["pdf_input_json"]`, extrai o JSON, gera o arquivo `processos.xlsx` (via `json_to_xlsx`) e salva como artefato ADK. Não depende de LLM. |
 | 5 | `pdf_subagent` | `AgentTool` | Encapsula `agente_gerador_pdf_md/agent.py` | Lê o JSON e o template do state e gera documento Markdown completo. O Markdown é salvo em `state["pdf_markdown"]` via `output_key`. |
 | 6 | `generate_pdf_from_state` | Tool determinística | `document_processor/tools/generate_artifacts.py` | Lê `state["pdf_markdown"]`, converte para PDF via ReportLab (`_build_pdf`) e salva como artefato ADK. Não depende de LLM. |
+| 7 | `save_mermaid_from_state` | Tool determinística | `document_processor/tools/generate_artifacts.py` | Extrai o bloco Mermaid de `state["pdf_markdown"]`, identifica os N0s distintos de `state["pdf_input_json"]` e persiste no Spanner (tabelas `N0_Mermaid` + `Edge_Has_Mermaid`) via upsert idempotente. Não depende de LLM. |
 
-### Fluxo de Execução Obrigatório (6 passos)
+### Fluxo de Execução Obrigatório (7 passos)
 
 ```
 1. Receber arquivo do usuário
@@ -59,18 +61,19 @@ Atua como ponto de entrada do sistema e especialista sênior em BPM. Recebe arqu
 5. Chamar generate_xlsx_from_state            → gera processos.xlsx a partir do JSON no state
 6. Chamar pdf_subagent (sem args)             → gera Markdown do documento de processo
 7. Chamar generate_pdf_from_state             → gera documento_processo.pdf a partir do Markdown no state
-8. Retransmitir mensagens LITERAIS das tools generate_xlsx e generate_pdf ao usuário
+8. Chamar save_mermaid_from_state             → extrai bloco Mermaid do Markdown e persiste no Spanner para cada N0
+9. Retransmitir mensagens LITERAIS das tools generate_xlsx e generate_pdf ao usuário
 ```
 
-> **Regra crítica:** O agente DEVE chamar as **6 ferramentas** em sequência, mesmo que etapas anteriores devolvam erros aparentes. As tools determinísticas possuem validações próprias e retornam mensagens de erro descritivas.
+> **Regra crítica:** O agente DEVE chamar as **7 ferramentas** em sequência, mesmo que etapas anteriores devolvam erros aparentes. As tools determinísticas possuem validações próprias e retornam mensagens de erro descritivas.
 
 ### State Compartilhado
 
 | Chave no State | Escrito por | Lido por |
 |---------------|-------------|----------|
 | `pdf_model_md` | `preparar_state_inicial` | `agente_gerador_pdf_md` (via `{pdf_model_md?}` no prompt) |
-| `pdf_input_json` | `as_is` (via `output_key`) | `generate_xlsx_from_state`, `agente_gerador_pdf_md` (via `{pdf_input_json?}` no prompt) |
-| `pdf_markdown` | `agente_gerador_pdf_md` (via `output_key`) | `generate_pdf_from_state` |
+| `pdf_input_json` | `as_is` (via `output_key`) | `generate_xlsx_from_state`, `agente_gerador_pdf_md` (via `{pdf_input_json?}` no prompt), `save_mermaid_from_state` |
+| `pdf_markdown` | `agente_gerador_pdf_md` (via `output_key`) | `generate_pdf_from_state`, `save_mermaid_from_state` |
 
 ### Guardrails
 
@@ -240,6 +243,18 @@ Estas tools são chamadas diretamente pelo `document_processor` **após** os sub
 | **Dependências** | `reportlab` |
 | **Fallback** | Se a renderização ReportLab falhar, gera um PDF mínimo contendo a mensagem de erro |
 
+### `save_mermaid_from_state`
+
+| Aspecto | Detalhe |
+|---------|--------|
+| **Entrada** | `state["pdf_markdown"]` + `state["pdf_input_json"]` |
+| **Saída** | Upsert no Spanner: `N0_Mermaid` + `Edge_Has_Mermaid` |
+| **Processamento** | Extrai o primeiro bloco ` ```mermaid...``` ` do Markdown via regex. Extrai N0s distintos do JSON. Para cada N0 calcula `n0_id = _make_id(n0_nome)` (UUID v5 determinístico) e persiste em lote único via `_upsert_mermaid_sync()` em `asyncio.to_thread()`. |
+| **Timeout** | 60 segundos |
+| **Idempotência** | `insert_or_update` — reprocessar o mesmo documento sobrescreve sem duplicar |
+| **Cardinalidade** | 1 script Mermaid por N0 (mesmo script gerado para o documento é associado a todos os N0s distintos presentes no JSON) |
+| **Dependências** | `google-cloud-spanner` |
+
 ### Função utilitária `_extract_json_from_text`
 
 A tool `generate_xlsx_from_state` utiliza uma função auxiliar que encontra o primeiro `{` e o último `}` no texto do state, extrai o candidato a JSON e valida se contém os campos `columns` e `rows`. Isso torna a pipeline tolerante a sub-agentes que eventualmente incluam texto antes/depois do JSON.
@@ -277,10 +292,16 @@ document_processor (orquestrador)
   │       ├── LLM gera documento Markdown completo
   │       └─→ state["pdf_markdown"] = <markdown gerado>  (via output_key)
   │
-  └── 6. generate_pdf_from_state()                ← tool determinística
-          ├── Lê state["pdf_markdown"]
-          ├── _build_pdf(markdown) → bytes (ReportLab)
-          └─→ ADK artifact: documento_processo.pdf (versão N)
+  ├── 6. generate_pdf_from_state()                ← tool determinística
+  │       ├── Lê state["pdf_markdown"]
+  │       ├── _build_pdf(markdown) → bytes (ReportLab)
+  │       └─→ ADK artifact: documento_processo.pdf (versão N)
+  │
+  └── 7. save_mermaid_from_state()                ← tool determinística
+          ├── Lê state["pdf_markdown"] → extrai bloco ```mermaid...```
+          ├── Lê state["pdf_input_json"] → extrai N0s distintos
+          ├── _upsert_mermaid_sync(n0_nomes, mermaid_script) via asyncio.to_thread()
+          └─→ Spanner: N0_Mermaid (1 row/N0) + Edge_Has_Mermaid
 ```
 
 ---
@@ -293,6 +314,25 @@ document_processor (orquestrador)
 | `documento_processo.pdf` | `application/pdf` | `generate_pdf_from_state` | ✅ |
 
 > Os artefatos são versionados automaticamente pelo ADK. Se o mesmo arquivo for gerado novamente na mesma sessão, a versão é incrementada (versão 1, versão 2…). Os artefatos ficam persistidos em `.adk/artifacts/`.
+
+---
+
+## Persistência de Dados (Spanner — Mermaid)
+
+A tool `save_mermaid_from_state` persiste o script Mermaid gerado pelo `agente_gerador_pdf_md` no **Google Cloud Spanner**.
+
+| Configuração | Valor |
+|-------------|-------|
+| Projeto GCP | `steady-computer-487217-p6` |
+| Instância | `id-agente-processo` |
+| Database | `db-agente-processo` |
+| Tabela principal | `N0_Mermaid` (PK: `n0_id`, campos: `mermaid_script`, `gerado_em`) |
+| Tabela de aresta | `Edge_Has_Mermaid` (PK: `n0_id, mermaid_id`) |
+| Credenciais | `credentials.json` local ou ADC no Vertex AI |
+| Idempotência | `insert_or_update` via UUID v5 determinístico por `n0_nome` |
+| Concorrência | Escrita em `asyncio.to_thread()` para não bloquear o event loop |
+| Timeout | 60 segundos |
+| Função síncrona | `_upsert_mermaid_sync()` em `document_processor/tools/spanner_tool.py` |
 
 ---
 

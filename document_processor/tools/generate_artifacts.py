@@ -10,6 +10,7 @@ independentemente de os sub-agentes terem chamado suas próprias tools internas.
 import asyncio
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -24,6 +25,7 @@ from google.adk.tools.tool_context import ToolContext
 
 from agent_tools.json_to_xlsx import json_to_xlsx
 from agente_gerador_pdf_md.tools.markdown_to_pdf_tool import _build_pdf
+from document_processor.tools.spanner_tool import _upsert_mermaid_sync, _SPANNER_TIMEOUT
 
 # ─── Configurações Firestore ─────────────────────────────────────────────────
 _CREDENTIALS_PATH = Path(__file__).resolve().parents[2] / "credentials.json"
@@ -307,6 +309,96 @@ async def generate_xlsx_from_state(tool_context: ToolContext) -> Dict[str, Any]:
             f"e disponível para download. Firestore: {firestore_status}."
         ),
     }
+
+
+_MERMAID_TIMEOUT = 60
+
+
+def _extract_mermaid_block(markdown: str) -> str | None:
+    """Extrai o conteúdo do primeiro bloco ```mermaid...``` presente no Markdown.
+
+    Retorna apenas o conteúdo interno (sem as code fences), ou None se não encontrar.
+    """
+    match = re.search(r'```mermaid\s*\n(.*?)\n```', markdown, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+async def save_mermaid_from_state(tool_context: ToolContext) -> Dict[str, Any]:
+    """
+    Extrai o script Mermaid do state (pdf_markdown), identifica os N0s distintos
+    do state (pdf_input_json) e persiste no Spanner via upsert idempotente.
+
+    Tabelas afetadas: N0_Mermaid + Edge_Has_Mermaid.
+
+    Esta tool é determinística: não depende do LLM para ser chamada.
+    Deve ser invocada pelo document_processor após generate_pdf_from_state.
+
+    Returns:
+        Dicionário com status da operação.
+    """
+    # 1. Extrai bloco Mermaid do Markdown gerado pelo pdf_subagent
+    markdown = tool_context.state.get("pdf_markdown", "")
+    if not markdown or not markdown.strip():
+        return {
+            "status": "error",
+            "message": "State 'pdf_markdown' está vazio. O pdf_subagent não gerou o Markdown.",
+        }
+
+    mermaid_script = _extract_mermaid_block(markdown)
+    if not mermaid_script:
+        return {
+            "status": "error",
+            "message": "Nenhum bloco ```mermaid encontrado no pdf_markdown.",
+        }
+
+    # 2. Extrai N0s distintos do JSON gerado pelo as_is_agent
+    raw_json = tool_context.state.get("pdf_input_json", "")
+    json_str = _extract_json_from_text(raw_json)
+    if not json_str:
+        return {
+            "status": "error",
+            "message": "State 'pdf_input_json' inválido — não foi possível extrair N0s.",
+        }
+
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        return {"status": "error", "message": f"JSON inválido ao extrair N0s: {e}"}
+
+    n0_nomes = sorted({
+        (r.get("N0") or "").strip()
+        for r in data.get("rows", [])
+        if (r.get("N0") or "").strip()
+    })
+
+    if not n0_nomes:
+        return {
+            "status": "error",
+            "message": "Nenhum N0 encontrado no JSON para persistir o Mermaid.",
+        }
+
+    # 3. Persiste no Spanner (síncrono via thread para não bloquear o event loop)
+    try:
+        mensagem = await asyncio.wait_for(
+            asyncio.to_thread(_upsert_mermaid_sync, n0_nomes, mermaid_script),
+            timeout=_MERMAID_TIMEOUT,
+        )
+        return {"status": "success", "message": mensagem}
+
+    except asyncio.TimeoutError:
+        msg = (
+            f"Timeout ao persistir Mermaid no Spanner após {_MERMAID_TIMEOUT}s. "
+            "Verifique a conectividade e a permissão da service account."
+        )
+        print(f"[Spanner][ERROR] {msg}", file=sys.stderr)
+        return {"status": "error", "message": msg}
+
+    except Exception as e:
+        msg = f"Erro ao persistir Mermaid no Spanner: {e}"
+        print(f"[Spanner][ERROR] {msg}", file=sys.stderr)
+        return {"status": "error", "message": msg}
 
 
 async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
