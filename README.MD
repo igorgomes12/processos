@@ -1,434 +1,287 @@
 # agente-processos
 
-Sistema multi-agente para mapeamento e documentação de processos de negócio no formato **AS-IS**, construído com o **Google ADK (Agent Development Kit)** e modelos **Gemini**. A partir de um documento de processo (PDF, DOCX, imagem), o sistema extrai automaticamente a estrutura hierárquica do processo, persiste os dados no **Google Cloud Firestore** e gera dois artefatos para download: uma **planilha Excel** e um **documento PDF** completo.
+Sistema multiagente para extração, estruturação e visualização de processos de negócio **AS-IS**, construído sobre o **Google ADK (Agent Development Kit)** e modelos **Gemini**.
 
 ---
 
-## Funcionalidades
+## Visão Geral
 
-- **Análise inteligente de documentos** — aceita PDFs, DOCXs e imagens contendo manuais, fluxogramas ou descrições de processos.
-- **Extração estruturada AS-IS** — mapeia o processo na hierarquia N0 (Frente) → N1 (Macro processo) → N2 (Processo) → N3 (Tarefa) → N4 (Etapa), com atributos por etapa: descrição, entradas, saídas, sistemas envolvidos, KPIs e oportunidades de melhoria.
-- **Persistência no Firestore** — cada JSON gerado é persistido automaticamente no Google Cloud Firestore via tool determinística (projeto `steady-computer-487217-p6`, database `as-is-processes`, coleção `processos`).
-- **Geração de planilha Excel** — arquivo `processos.xlsx` formatado com cabeçalho estilizado, wrap text, freeze pane e autofilter.
-- **Geração de documento PDF** — arquivo `documento_processo.pdf` (A4) completo com metadados, fluxograma Mermaid, tabela de fluxo, diagnóstico AS-IS, backlog de melhorias, KPIs e registro de pendências.
-- **Download via ADK** — a planilha Excel fica disponível para download imediato ao final do processamento. O PDF é gerado sob demanda: o sistema pergunta ao usuário se deseja o documento e, mediante confirmação, apresenta o link de download.
+O sistema transforma documentos de processos de negócio (PDF, DOCX, imagens) em:
 
----
-
-## Pré-requisitos
-
-- Python **3.11.3** (gerenciado via [pyenv-win](https://github.com/pyenv-win/pyenv-win) no Windows)
-- Chave de API do Google AI Studio (`GOOGLE_API_KEY`)
-- Credenciais de service account GCP (`credentials.json` na raiz do projeto) — necessárias para persistência no Firestore
+- **Planilha Excel** estruturada (hierarquia N0–N4)
+- **Documento PDF** completo no formato AS-IS
+- **Scripts Mermaid** persistidos no Spanner (1 por N2_Processo)
+- **Interface de visualização** interativa (Streamlit)
 
 ---
 
-## Instalação
-
-### 1. Clone o repositório
-
-```bash
-git clone <url-do-repositorio>
-cd agente-processos
-```
-
-### 2. Configure o Python 3.11.3 com pyenv-win (Windows)
-
-```powershell
-# Instale o pyenv-win caso não tenha
-# https://github.com/pyenv-win/pyenv-win#installation
-
-# Instale e ative o Python 3.11.3
-pyenv install 3.11.3
-pyenv local 3.11.3
-```
-
-### 3. Crie e ative o ambiente virtual
-
-```powershell
-# Windows (PowerShell)
-$env:PYENV_VERSION="3.11.3"
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# Linux/macOS
-python3.11 -m venv .venv
-source .venv/bin/activate
-```
-
-### 4. Instale as dependências
-
-```powershell
-pip install -r requirements.txt
-```
-
-### 5. Configure as variáveis de ambiente
-
-Crie um arquivo `.env` na raiz:
-
-```dotenv
-GOOGLE_API_KEY=sua_chave_aqui
-MODEL=gemini-2.5-flash
-```
-
-> A variável `MODEL` é opcional. O padrão é `gemini-2.5-flash`. O `agente_gerador_pdf_md` usa `gemini-2.5-flash` de forma fixa, independente desta variável.
-
-### 6. Configure as credenciais do Firestore
-
-Coloque o arquivo `credentials.json` (service account GCP) na raiz do projeto.
-
-> **Importante:** `credentials.json` não deve ser versionado — certifique-se de que esteja no `.gitignore`.
-
----
-
-## Execução
-
-### Com o ADK Web UI (recomendado)
-
-```powershell
-# Com o venv ativado
-adk web
-
-# Ou sem ativar o venv
-.\.venv\Scripts\python.exe -c "from google.adk.cli import main; main()" web
-```
-
-Acesse `http://127.0.0.1:8000` no navegador, selecione o agente **`document_processor`** e envie um documento de processo.
-
-> **Windows (ambientes corporativos):** Se o comando `adk web` retornar "Acesso negado", use o comando alternativo via Python acima. Isso ocorre porque o `adk.exe` gerado pelo pip pode ser bloqueado por políticas de segurança do Windows.
-
-### Com o ADK CLI
-
-```powershell
-# Com o venv ativado
-adk run document_processor
-
-# Alternativa Windows (se adk.exe bloqueado)
-.\.venv\Scripts\python.exe -c "from google.adk.cli import main; main()" run document_processor
-```
-
----
-
-## Uso
-
-1. Inicie o ADK Web UI com `adk web`.
-2. Selecione o agente **`document_processor`**.
-3. Envie um arquivo contendo a descrição de um processo de negócio (PDF, DOCX ou imagem).
-4. **Turno 1 — Análise e planilha Excel:** o sistema executa o pipeline completo em 4 etapas:
-   1. Preparação do state inicial (carrega template Markdown)
-   2. Extração da estrutura AS-IS em JSON (sub-agente `as_is`)
-   3. Geração do Markdown do documento de processo (sub-agente `agente_gerador_pdf_md`)
-   4. Geração de `processos.xlsx` + persistência no Firestore (tool `generate_xlsx_from_state`)
-5. O link de download da planilha Excel é apresentado. O sistema pergunta se o usuário deseja o PDF.
-6. **Turno 2 — PDF sob demanda (opcional):** se o usuário confirmar, a tool `generate_pdf_from_state` é chamada e o link de download do `documento_processo.pdf` é apresentado. Se recusar, o fluxo encerra sem gerar o PDF.
-
----
-
-## Deploy no Vertex AI Agent Engine
-
-O script `deploy.py` publica o agente no **Vertex AI Agent Engine** (Reasoning Engine), tornando-o acessível via API REST sem necessidade de ambiente local.
-
-### Pré-requisitos de deploy
-
-| Requisito | Verificação |
-|-----------|-------------|
-| [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) (`gcloud`) instalado | `gcloud --version` |
-| Autenticação ADC configurada | `gcloud auth application-default login` |
-| Projeto GCP configurado | `gcloud config set project steady-computer-487217-p6` |
-| APIs necessárias habilitadas | ver seção abaixo |
-| Bucket GCS de staging criado | `gs://agente-processos-staging` em `us-central1` |
-
-### 1. Autenticação
-
-```powershell
-gcloud auth login
-gcloud auth application-default login
-gcloud config set project steady-computer-487217-p6
-```
-
-### 2. Habilitar APIs necessárias
-
-```powershell
-gcloud services enable aiplatform.googleapis.com `
-    firestore.googleapis.com `
-    cloudbuild.googleapis.com `
-    storage.googleapis.com `
-    logging.googleapis.com
-```
-
-### 3. Criar o bucket de staging (apenas na primeira vez)
-
-```powershell
-gcloud storage buckets create gs://agente-processos-staging `
-    --project=steady-computer-487217-p6 `
-    --location=us-central1
-```
-
-### 4. Executar o deploy
-
-Com o ambiente virtual ativado, rode o `deploy.py` a partir da raiz do projeto:
-
-```powershell
-.\.venv\Scripts\python.exe deploy.py
-```
-
-O script irá:
-1. Autenticar via ADC e configurar o quota project.
-2. Serializar o agente com `cloudpickle` e fazer upload para o bucket GCS.
-3. Fazer upload de `requirements.txt` e do tarball `dependencies.tar.gz` (código-fonte dos pacotes extra).
-4. Disparar o build remoto no Vertex AI (Cloud Build — pode levar 10–15 minutos).
-5. Aguardar a conclusão e exibir o `resource_name` do agente criado.
-
-Exemplo de saída esperada:
+## Arquitetura
 
 ```
-🚀 Iniciando deploy no Vertex AI Agent Engine...
-   Projeto  : steady-computer-487217-p6
-   Região   : us-central1
-   Bucket   : gs://agente-processos-staging
-   Modelo   : gemini-2.5-flash
-   Callbacks    : removidos (não serializáveis para deploy)
-   __pycache__  : removidos de todos os pacotes extra
-
-✅ Deploy concluído com sucesso!
-   Resource name : projects/658891422743/locations/us-central1/reasoningEngines/XXXXXXXXXXXXXXXXX
-   Display name  : agente-processos
+document_processor  (agente raiz / orquestrador)
+├── preparar_state_inicial          (tool local)
+├── as_is                           (sub-agente: extração JSON)
+├── save_to_firestore_from_state    (tool: JSON → Firestore)
+├── generate_xlsx_from_state        (tool: JSON → Excel)
+├── agente_gerador_pdf_md           (sub-agente: JSON → Markdown)
+├── generate_pdf_from_state         (tool: Markdown → PDF + Mermaid → Spanner)
+└── save_mermaid_from_state         (tool: Mermaid → Spanner N2_Mermaid)
 ```
 
-### 5. Permissão IAM para o Firestore (pós-deploy)
+### Modelos LLM
 
-O Vertex AI Reasoning Engine executa sob uma service account dedicada que precisa de permissão para gravar no Firestore. O script exibe o comando exato ao final, mas o procedimento é:
-
-```powershell
-# Obter o número do projeto
-$PROJECT_NUMBER = gcloud projects describe steady-computer-487217-p6 --format="value(projectNumber)"
-
-# Conceder roles/datastore.user à service account do Reasoning Engine
-gcloud projects add-iam-policy-binding steady-computer-487217-p6 `
-    --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com" `
-    --role="roles/datastore.user"
-```
-
-> Sem essa permissão o agente funciona normalmente, mas a persistência no Firestore falhará silenciosamente (o erro aparece nos logs do Cloud Logging).
-
-### 6. Usando o agente após o deploy
-
-```python
-import vertexai
-from vertexai import agent_engines
-
-vertexai.init(project="steady-computer-487217-p6", location="us-central1")
-
-# Substitua pelo resource_name exibido ao final do deploy
-agent = agent_engines.get("projects/658891422743/locations/us-central1/reasoningEngines/XXXXXXXXXXXXXXXXX")
-
-# Criar sessão e enviar mensagem
-session = agent.create_session(user_id="usuario-01")
-for event in agent.stream_query(
-    user_id="usuario-01",
-    session_id=session["id"],
-    message="Olá, vou enviar um documento de processo.",
-):
-    print(event)
-```
-
-### 7. Verificar logs do deploy
-
-Em caso de falha no build, acesse os logs pelo Console GCP:
-
-```
-https://console.cloud.google.com/logs/query?project=steady-computer-487217-p6
-```
-
-Filtro útil no Log Explorer:
-
-```
-resource.type="aiplatform.googleapis.com/ReasoningEngine"
-```
-
-### Configurações do deploy (`deploy.py`)
-
-| Parâmetro | Valor atual | Descrição |
-|-----------|-------------|-----------|
-| `PROJECT_ID` | `steady-computer-487217-p6` | Projeto GCP |
-| `LOCATION` | `us-central1` | Região do Vertex AI |
-| `STAGING_BUCKET` | `gs://agente-processos-staging` | Bucket GCS para artefatos de build |
-| `display_name` | `agente-processos` | Nome exibido no Console GCP |
-| `GOOGLE_GENAI_USE_VERTEXAI` | `1` | Força uso de ADC (sem API Key) no ambiente remoto |
-
-> **Workaround ativo — imagem base `reasoning-engine-py311:prod` (2026-03-02):** A versão atual da imagem base não cria o symlink `/code/.venv/bin/python` e executa o container como não-root, causando falha no step `compileall` do build com `exit code 127` ou `PermissionError`. O script `installation_scripts/fix_venv.sh` contorna esse bug criando um wrapper Python que redireciona o `compileall` para um diretório gravável (`/tmp/compileall-sp`). Ele é incluído automaticamente no `deploy.py` via `build_options.installation_scripts` e é **necessário em todos os deploys** enquanto o Google não corrigir a imagem base.
+| Agente | Modelo | ThinkingConfig |
+|--------|--------|----------------|
+| `document_processor` | `gemini-2.5-flash` | `thinking_budget=0` |
+| `as_is` | `gemini-2.5-flash` | Padrão ADK |
+| `agente_gerador_pdf_md` | `gemini-2.5-flash` | `thinking_budget=8192` |
 
 ---
 
 ## Estrutura do Projeto
 
 ```
-agente-processos/
+agente-processos-main/
 │
-├── document_processor/           # Agente raiz / orquestrador
-│   ├── __init__.py
-│   ├── agent.py                  # Definição do agente, tool preparar_state_inicial e AgentTools
-│   ├── data-models/
-│   │   ├── modelo_documento_processo_instrucoes_v2.md  # Template do documento AS-IS (v2)
-│   │   └── modelo_documento_processo_instrucoes_v3.md  # Template do documento AS-IS (v3, ativo)
+├── document_processor/          # Agente raiz / orquestrador
+│   ├── agent.py
 │   └── tools/
-│       ├── generate_artifacts.py     # Tools determinísticas: generate_xlsx_from_state
-│       │                             #   (+ persistência Firestore como side-effect),
-│       │                             #   generate_pdf_from_state
-│       └── json_to_xlsx.py           # (legado) Cópia duplicada do agent_tools/json_to_xlsx.py
+│       ├── generate_artifacts.py   # Tools determinísticas (XLSX, PDF, Mermaid)
+│       └── spanner_tool.py         # Persistência no Spanner
 │
-├── as_is/                        # Sub-agente: extração JSON N0–N4 (apenas LLM, sem tools)
-│   ├── __init__.py
-│   ├── agent.py                  # Agente as_is com output_key="pdf_input_json", tools=[]
+├── as_is/                       # Sub-agente de extração estruturada
+│   └── agent.py
+│
+├── agente_gerador_pdf_md/       # Sub-agente gerador de Markdown/PDF
+│   ├── agent.py
 │   └── tools/
-│       ├── __init__.py
-│       ├── firestore_tool.py         # (legado) Tool de persistência — substituída por save_to_firestore_from_state
-│       └── json_to_xlsx_tool.py      # (legado) Tool antiga de geração XLSX dentro do sub-agente
+│       └── markdown_to_pdf_tool.py
 │
-├── agente_gerador_pdf_md/        # Sub-agente: gera Markdown do documento (apenas LLM, sem tools)
-│   ├── __init__.py
-│   ├── agent.py                  # Agente pdf com output_key="pdf_markdown", tools=[]
-│   └── tools/
-│       ├── __init__.py
-│       └── markdown_to_pdf_tool.py   # Parser Markdown→ReportLab + _build_pdf()
+├── agent_tools/                 # Utilitários compartilhados
+│   └── json_to_xlsx.py
 │
-├── agent_tools/
-│   └── json_to_xlsx.py           # Função utilitária compartilhada: json_to_xlsx()
+├── dataViz/                     # Interface de visualização (Streamlit)
+│   └── streamlit_grafo.py
 │
-├── logger/                       # Sistema de logging estruturado
-│   ├── __init__.py
-│   ├── adk_callbacks.py          # Callbacks do ADK para logging de eventos
-│   ├── base.py                   # Interface base do logger
-│   ├── cloud_logger.py           # Logger para Google Cloud Logging
-│   ├── composite_logger.py       # Logger composto (local + cloud)
-│   ├── factory.py                # Fábrica de loggers
-│   └── local_logger.py           # Logger local (arquivo/console)
+├── prompts/                     # Prompts externos dos sub-agentes
+│   └── prompt_agente_gerador_pdf.txt
 │
-├── prompts/
-│   └── prompt_agente_gerador_pdf.txt  # Prompt detalhado do sub-agente gerador de Markdown
-│
-├── tests/                        # Testes automatizados
-│   ├── conftest.py
-│   ├── test_agent_tools/
-│   ├── test_agente_gerador_pdf_md/
-│   ├── test_as_is/
-│   ├── test_document_processor/
-│   └── test_logger/
-│
-├── .venv/                        # Ambiente virtual Python 3.11.3 (não versionado)
-├── .python-version               # Versão do Python para pyenv (3.11.3)
-├── credentials.json              # Service account GCP (não versionado)
-├── .env                          # Variáveis de ambiente (não versionado)
-├── installation_scripts/
-│   └── fix_venv.sh               # Workaround para bug da imagem base reasoning-engine-py311:prod
-├── json_example.py               # Exemplo do schema JSON canônico
-├── requirements.txt              # Dependências Python
-├── deploy.py                     # Script de deploy
-├── AGENTS.MD                     # Documentação técnica dos agentes
-└── README.MD                     # Este arquivo
+├── AGENTS.MD                    # Documentação detalhada dos agentes
+├── README.MD
+├── requirements.txt
+├── .env                         # Variáveis de ambiente (não versionado)
+└── credentials.json             # Service account GCP (não versionado)
 ```
 
 ---
 
-## Arquitetura de Agentes
+## Database — Google Cloud Spanner (`db-agente-processo`)
 
-O sistema usa **3 agentes** organizados em hierarquia orquestradora/sub-agente, com **3 tools determinísticas** para persistência e geração dos artefatos de download.
+### Tabelas
+
+| Tabela | Descrição | PK |
+|--------|-----------|-----|
+| `N0_Frente` | Frente de negócio | `id` |
+| `N1_MacroProcesso` | Macro processo | `id` |
+| `N2_Processo` | Processo | `id` |
+| `N3_Tarefa` | Tarefa | `id` |
+| `N4_Etapa` | Etapa | `id` |
+| `N5_Atributos` | Atributos da etapa | `id` |
+| `N2_Mermaid` | Script Mermaid por processo | `n2_id` (FK → N2_Processo) |
+
+### Tabelas de Relacionamento (Arestas)
+
+| Tabela | Relacionamento |
+|--------|---------------|
+| `Edge_Has_N1` | N0_Frente → N1_MacroProcesso |
+| `Edge_Has_N2` | N1_MacroProcesso → N2_Processo |
+| `Edge_Has_N3` | N2_Processo → N3_Tarefa |
+| `Edge_Has_N4` | N3_Tarefa → N4_Etapa |
+| `Edge_Has_N5` | N4_Etapa → N5_Atributos |
+| `Edge_Has_Mermaid` | N2_Processo → N2_Mermaid |
+
+### Cardinalidade Mermaid
+
+> **1 script Mermaid : 1 N2_Processo** — a PK `n2_id` garante unicidade. O mesmo script gerado para o documento é persistido para cada N2 distinto presente no JSON.
+
+---
+
+## Interface de Visualização — Streamlit (`dataViz/`)
+
+### Como executar
+
+```bash
+cd agente-processos-main
+streamlit run dataViz/streamlit_grafo.py
+```
+
+### Funcionalidades
+
+#### Sidebar — Pesquisa de Processos
+- Campo de busca com **Enter** ou botão **Buscar**
+- Pesquisa no Spanner (`N0_Frente`) com filtro `LIKE` (busca parcial por nome da frente)
+- Exibe cards com: nome da frente, macro processos vinculados e total de tarefas
+- Conexão reutilizada via `@st.cache_resource`
+
+#### Área Principal — Detalhe do Processo
+
+**Aba: Passo a Passo**
+- Hierarquia completa carregada do Spanner: N1 → N2 → N3 → N4 → N5
+- Cada Macro Processo em `st.expander`
+- Por etapa: descrição, entradas/saídas, sistemas envolvidos, KPIs, oportunidades de melhoria
+- Métricas do processo: total de etapas, tarefas, processos e macro processos
+
+**Aba: Diagrama de Fluxo**
+- Lê o script Mermaid da tabela `N2_Mermaid` para cada N2 do processo selecionado
+- Renderiza o diagrama via `mermaid.ink/img/{base64}` → PNG → `st.image()`
+- Fallback automático para CDN Mermaid JS (`components.html`) se `mermaid.ink` não responder
+- Normalização automática do script Mermaid (colapsa quebras de linha dentro de labels, CRLF → LF)
+
+---
+
+## Pipeline de Processamento
 
 ```
-document_processor  ← agente raiz (orquestrador) [gemini-2.5-flash, thinking_budget=0]
-├── preparar_state_inicial          ← tool local: carrega template Markdown no state
-│
-│   ── TURNO 1 (ao receber o documento) ──────────────────────────────────────
-├── as_is                           ← sub-agente [gemini-2.5-flash]: extrai JSON N0–N4
-│                                      └─→ state["pdf_input_json"]  (via output_key)
-├── agente_gerador_pdf_md           ← sub-agente [gemini-2.5-flash, thinking_budget=8192]: JSON → Markdown
-│                                      └─→ state["pdf_markdown"]  (via output_key)
-├── generate_xlsx_from_state        ← tool determinística: JSON → processos.xlsx
-│                                      side-effect: persiste JSON no Firestore
-│
-│   ── TURNO 2 (se usuário confirmar o PDF) ──────────────────────────────────
-└── generate_pdf_from_state         ← tool determinística: Markdown → documento_processo.pdf
+1. Usuário envia documento (PDF/DOCX/imagem)
+       ↓
+2. preparar_state_inicial()
+   └→ state["pdf_model_md"] = template Markdown
+       ↓
+3. as_is_agent(documento)
+   └→ state["pdf_input_json"] = JSON N0–N4
+       ↓
+4. save_to_firestore_from_state()
+   └→ Firestore: coleção 'processos'
+       ↓
+5. generate_xlsx_from_state()
+   └→ Artefato: processos.xlsx
+       ↓
+6. pdf_subagent()
+   └→ state["pdf_markdown"] = Markdown completo AS-IS
+       ↓
+7. generate_pdf_from_state()
+   ├→ Artefato: documento_processo.pdf
+   └→ Side-effect: _upsert_mermaid_sync() → Spanner N2_Mermaid
+       ↓
+8. save_mermaid_from_state()
+   └→ Spanner: N2_Mermaid (fallback / idempotente)
 ```
 
-**Princípio arquitetural:** A geração de conteúdo (JSON, Markdown) é feita pelos sub-agentes via LLM. A persistência no Firestore é um side-effect embutido em `generate_xlsx_from_state`, e a geração dos artefatos de download (XLSX, PDF) é feita por **tools determinísticas** no orquestrador, garantindo que os arquivos sejam sempre criados independentemente do comportamento dos sub-agentes. O PDF é gerado apenas sob demanda (turno 2), mediante confirmação do usuário.
+### Artefatos Gerados
 
-Consulte [AGENTS.MD](AGENTS.MD) para a documentação completa da arquitetura, responsabilidades, tools, state compartilhado e convenções de cada agente.
-
----
-
-## Schema JSON Canônico (N0–N4)
-
-O sistema usa um schema padronizado para representar processos. Cada linha (`row`) representa uma **etapa N4**:
-
-| Campo | Tipo | Descrição |
-|-------|------|-----------|
-| `N0` | string | Frente (ex.: "Operações") |
-| `N1` | string | Macro processo (ex.: "Gestão de Contratos") |
-| `N2` | string | Processo (ex.: "Renovação de Contrato") |
-| `N3` | string | Tarefa / agrupador |
-| `N4` | string | Etapa executável |
-| `descricao` | string | Descrição detalhada da etapa |
-| `entradas` | string[] | Insumos/dados de entrada |
-| `saidas` | string[] | Produtos/entregáveis de saída |
-| `sistemasEnvolvidos` | string[] | Sistemas/ferramentas usados |
-| `kpis` | string[] | Indicadores de desempenho |
-| `oportunidadesMelhoria` | string[] | Melhorias identificadas na etapa |
-
-Consulte [json_example.py](json_example.py) para um exemplo completo do schema.
+| Arquivo | Tipo | Download ADK |
+|---------|------|:---:|
+| `processos.xlsx` | Excel estruturado N0–N4 | ✅ |
+| `documento_processo.pdf` | Documento AS-IS completo | ✅ |
 
 ---
 
-## Artefatos Gerados
+## Schema JSON (N0–N4)
 
-| Arquivo | Formato | Gerado por | Conteúdo |
-|---------|---------|-----------|----------|
-| `processos.xlsx` | Excel (.xlsx) | `generate_xlsx_from_state` | Planilha com todas as etapas N4, cabeçalho estilizado (azul escuro `#1F4E79`), filtros automáticos e texto com quebra de linha |
-| `documento_processo.pdf` | PDF (A4) | `generate_pdf_from_state` | Documento completo AS-IS: metadados, fluxograma, tabela de fluxo, diagnóstico, backlog de melhorias, KPIs, pendências |
-
-> Os artefatos são versionados automaticamente pelo ADK. Se o mesmo arquivo for gerado novamente na mesma sessão, a versão é incrementada.
-
----
-
-## Dependências Principais
-
-| Pacote | Versão instalada | Uso |
-|--------|-----------------|-----|
-| `google-adk` | 1.26.0 | Framework de agentes (ADK) |
-| `google-genai` | latest | SDK do Gemini |
-| `google-cloud-aiplatform` | 1.139.0 | Integração com Vertex AI / AI Platform |
-| `google-cloud-firestore` | latest | Persistência dos dados no Firestore |
-| `google-cloud-logging` | latest | Logging estruturado no Google Cloud |
-| `reportlab` | latest | Geração de PDF a partir de Markdown |
-| `pandas` | latest | Manipulação de dados para Excel |
-| `openpyxl` | latest | Formatação avançada do Excel |
-| `python-dotenv` | latest | Carregamento de variáveis de ambiente |
-
----
-
-## Variáveis de Ambiente
-
-| Variável | Obrigatória | Descrição |
-|----------|-------------|-----------|
-| `GOOGLE_API_KEY` | Sim | Chave de API do Google AI Studio / Vertex AI |
-| `MODEL` | Não | Nome do modelo Gemini (padrão: `gemini-2.5-flash`). Não afeta o `agente_gerador_pdf_md`, que usa `gemini-2.5-flash` de forma fixa. |
+```json
+{
+  "schemaVersion": "1.0.0",
+  "meta": { "model": "N0-N4+atributos", "locale": "pt-BR" },
+  "columns": [
+    { "key": "N0", "label": "Frente (N0)" },
+    { "key": "N1", "label": "Macro processo (N1)" },
+    { "key": "N2", "label": "Processo (N2)" },
+    { "key": "N3", "label": "Tarefa (N3)" },
+    { "key": "N4", "label": "Etapa (N4)" },
+    { "key": "descricao" },
+    { "key": "entradas" },
+    { "key": "saidas" },
+    { "key": "sistemasEnvolvidos" },
+    { "key": "kpis" },
+    { "key": "oportunidadesMelhoria" }
+  ],
+  "rows": [ { "rowId": "...", "N0": "...", "N1": "...", "N2": "...",
+              "N3": "...", "N4": "...", "descricao": "...",
+              "entradas": [], "saidas": [], "sistemasEnvolvidos": [],
+              "kpis": [], "oportunidadesMelhoria": [] } ]
+}
+```
 
 ---
 
-## Limitações Conhecidas
+## Configuração
 
-- O fluxograma Mermaid gerado no PDF é representado como texto (o ReportLab não renderiza diagramas Mermaid nativamente).
-- Documentos com estrutura muito informal ou sem hierarquia clara podem resultar em mapeamentos imprecisos — recomenda-se revisar o JSON gerado antes de usar o PDF como documento oficial.
-- A variável `MODEL` não afeta o `agente_gerador_pdf_md`, que usa `gemini-2.5-flash` de forma fixa.
+### Variáveis de Ambiente (`.env`)
+
+```env
+GOOGLE_API_KEY=<sua_chave_google_ai_studio>
+MODEL=gemini-2.5-flash          # opcional
+```
+
+### Credenciais GCP (`credentials.json`)
+
+Service account com permissões:
+- `roles/datastore.user` — Firestore
+- `roles/spanner.databaseUser` — Spanner
+
+> Não versionar. Adicionar ao `.gitignore`.
+
+### Instalação
+
+```bash
+pip install -r requirements.txt
+```
+
+### Executar o Agente (ADK)
+
+```bash
+adk web
+```
+
+### Executar a Interface de Visualização
+
+```bash
+streamlit run dataViz/streamlit_grafo.py
+```
+
+---
+
+## Persistência de Dados
+
+| Dado | Destino | Quando |
+|------|---------|--------|
+| JSON N0–N4 | Firestore (`processos`) | Após extração pelo `as_is` |
+| Hierarquia completa | Spanner (`N0`–`N5` + arestas) | Durante persistência do grafo |
+| Script Mermaid | Spanner (`N2_Mermaid`) | Side-effect de `generate_pdf_from_state` |
+| Excel | ADK artifact | Tool `generate_xlsx_from_state` |
+| PDF | ADK artifact | Tool `generate_pdf_from_state` |
+
+---
+
+## Deploy no Vertex AI Agent Engine
+
+O script `deploy.py` publica o agente no **Vertex AI Agent Engine** (Reasoning Engine).
+
+### Pré-requisitos
+
+- Google Cloud SDK (`gcloud`) instalado e autenticado
+- APIs habilitadas: `aiplatform`, `firestore`, `spanner`, `cloudbuild`, `storage`
+- Bucket GCS de staging: `gs://agente-processos-staging`
+
+### Executar o deploy
+
+```bash
+python deploy.py
+```
+
+> **Bug na imagem base `reasoning-engine-py311:prod`:** A imagem atual não cria `/code/.venv/bin/python` e executa como não-root, causando falha no build. O script `installation_scripts/fix_venv.sh` aplica o workaround automaticamente via `build_options.installation_scripts`.
+
+---
+
+## Documentação Adicional
+
+- **`AGENTS.MD`** — arquitetura detalhada, responsabilidades, state compartilhado, guardrails e convenções de desenvolvimento de cada agente.
+
+---
+
+## Observações
+
 - O `document_processor` usa `thinking_budget=0` para evitar respostas vazias ao processar PDFs com labels de confidencialidade (MSIP).
-- O extra `agent_engines` do `google-cloud-aiplatform` não está disponível na versão 1.139.0 — isso gera um warning durante a instalação, mas não impede o funcionamento do sistema.
-- No Windows com pyenv-win, o comando `python -m venv` pode falhar via shim; use `$env:PYENV_VERSION="3.11.3"` antes de criar o venv ou use o caminho direto do executável.
-- **Bug na imagem base `reasoning-engine-py311:prod` (2026-03-02):** A versão atual da imagem não cria `/code/.venv/bin/python` e executa como não-root, causando falha no build remoto (`exit code 127` / `PermissionError`). O script `installation_scripts/fix_venv.sh` aplica o workaround automaticamente — é necessário em todos os deploys até o Google publicar uma imagem corrigida.
-
----
-
-## Contribuindo
-
-1. Faça um fork do repositório.
-2. Crie uma branch descritiva: `git checkout -b feat/minha-melhoria`.
-3. Implemente e teste suas alterações.
-4. Abra um Pull Request com descrição clara do que foi alterado e por quê.
+- A persistência do Mermaid é **side-effect determinístico** de `generate_pdf_from_state` — não depende do LLM chamar `save_mermaid_from_state`.
+- Todas as operações de I/O (Firestore, Spanner, Excel, PDF) são executadas em `asyncio.to_thread()` para não bloquear o event loop do ADK.
+- O UUID de cada nó é gerado via **UUID v5 determinístico** (`_make_id(n0, n1, n2, ...)`) — reprocessar o mesmo documento é idempotente.
