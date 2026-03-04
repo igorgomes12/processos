@@ -1,0 +1,14 @@
+# Dependências do Streamlit Visualizador de Processos (Cloud Run)
+# Inclui apenas o necessário para dataViz/streamlit_grafo.py
+
+streamlit>=1.35.0
+
+# Leitura do Spanner (N0-N4 + Mermaid)
+google-cloud-spanner>=3.48.0
+
+# Importação de _clean_mermaid_code do agente_gerador_pdf_md
+reportlab>=4.0.0
+
+# Autenticação GCP (ADC no Cloud Run / service account local)
+google-auth>=2.29.0
+google-auth-httplib2>=0.2.0

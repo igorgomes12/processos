@@ -1,0 +1,11 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '-f'
+      - 'dataViz/Dockerfile'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/streamlit-processos:latest'
+      - '.'
+images:
+  - 'gcr.io/$PROJECT_ID/streamlit-processos:latest'
