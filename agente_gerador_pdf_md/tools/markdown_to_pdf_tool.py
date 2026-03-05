@@ -3,6 +3,7 @@ import re
 import base64
 import urllib.request
 import os
+import html as html_utils
 from io import BytesIO
 from typing import Dict, Any, Optional
 
@@ -14,6 +15,16 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, ListFlowable, ListItem, Image
 from reportlab.lib import colors
 
+try:
+    import markdown as markdown_lib
+except Exception:  # pragma: no cover - dependencia opcional
+    markdown_lib = None
+
+try:
+    from weasyprint import HTML
+except Exception:  # pragma: no cover - dependencia opcional
+    HTML = None
+
 
 # Debug mode (ativa logs detalhados)
 DEBUG_MERMAID = os.getenv('DEBUG_MERMAID', 'false').lower() == 'true'
@@ -23,6 +34,42 @@ def _debug_log(message: str):
     """Imprime log apenas se DEBUG_MERMAID estiver ativo."""
     if DEBUG_MERMAID:
         print(f"[DEBUG] {message}")
+
+
+def _normalize_markdown_for_mermaid(markdown_text: str) -> str:
+    """
+    Normaliza markdown para aumentar a taxa de detecção de blocos Mermaid.
+
+    Casos tratados:
+    - Conteúdo serializado com "\\n" literal (sem quebras reais de linha).
+    - Fences Mermaid inline (abertura/conteúdo/fechamento na mesma linha).
+
+    Retorna sempre blocos Mermaid no formato canônico:
+    ```mermaid
+    ...
+    ```
+    """
+    if not markdown_text:
+        return markdown_text
+
+    normalized = markdown_text.replace('\r\n', '\n').replace('\r', '\n')
+
+    # Se o markdown veio serializado (sem '\n' reais), converte '\\n' em quebra real.
+    if '\n' not in normalized and r'\n' in normalized:
+        normalized = normalized.replace(r'\n', '\n')
+
+    mermaid_fence_pattern = re.compile(
+        r'(?P<fence>`{3,}|~{3,})[ \t]*mermaid(?:[^\n\r]*)\s*'
+        r'(?P<body>.*?)'
+        r'(?P=fence)',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def _normalize_block(match: re.Match) -> str:
+        body = (match.group('body') or '').strip()
+        return f"\n```mermaid\n{body}\n```\n"
+
+    return mermaid_fence_pattern.sub(_normalize_block, normalized)
 
 
 def _clean_mermaid_code(mermaid_code: str) -> str:
@@ -130,38 +177,8 @@ def _render_mermaid_image(mermaid_code: str, max_width: float = 5.5 * inch, max_
         Objeto Image do ReportLab ou None em caso de erro
     """
     try:
-        # Limpa o código Mermaid
-        cleaned_code = _clean_mermaid_code(mermaid_code)
-        
-        # Codifica o código Mermaid em base64
-        mermaid_bytes = cleaned_code.encode('utf-8')
-        mermaid_b64 = base64.urlsafe_b64encode(mermaid_bytes).decode('ascii')
-        
-        # URL da API do mermaid.ink
-        url = f"https://mermaid.ink/img/{mermaid_b64}"
-        print(f"[MERMAID] 🌐 Chamando API mermaid.ink...")
-        _debug_log(f"URL Mermaid.ink: {url[:100]}...")
-        
-        # Cria requisição com headers apropriados
-        req = urllib.request.Request(
-            url,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'image/png,image/*,*/*',
-                'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Referer': 'https://mermaid.ink/'
-            }
-        )
-        
-        # Faz o download da imagem
-        with urllib.request.urlopen(req, timeout=15) as response:
-            image_data = response.read()
-            print(f"[MERMAID] ✅ Imagem recebida: {len(image_data)} bytes")
-            _debug_log(f"Imagem recebida: {len(image_data)} bytes")
-        
-        # Valida se recebeu dados de imagem
-        if len(image_data) < 100:
-            _debug_log(f"⚠️  Resposta muito pequena ({len(image_data)} bytes), provavelmente erro")
+        image_data = _fetch_mermaid_png_bytes(mermaid_code)
+        if not image_data:
             return None
         
         # Cria um objeto Image do ReportLab
@@ -204,8 +221,86 @@ def _render_mermaid_image(mermaid_code: str, max_width: float = 5.5 * inch, max_
     except Exception as e:
         print(f"[MERMAID] ❌ ERRO ao renderizar: {type(e).__name__}: {e}")
         _debug_log(f"❌ Erro ao renderizar Mermaid: {type(e).__name__}: {e}")
-        _debug_log(f"URL que falhou: {url if 'url' in locals() else 'N/A'}")
         return None
+
+
+def _fetch_mermaid_png_bytes(mermaid_code: str) -> Optional[bytes]:
+    """Obtém bytes PNG do Mermaid via mermaid.ink para reutilização em ReportLab e HTML."""
+    # Limpa o código Mermaid
+    cleaned_code = _clean_mermaid_code(mermaid_code)
+
+    # Codifica o código Mermaid em base64
+    mermaid_bytes = cleaned_code.encode('utf-8')
+    mermaid_b64 = base64.urlsafe_b64encode(mermaid_bytes).decode('ascii')
+
+    # URL da API do mermaid.ink
+    url = f"https://mermaid.ink/img/{mermaid_b64}"
+    print(f"[MERMAID] 🌐 Chamando API mermaid.ink...")
+    _debug_log(f"URL Mermaid.ink: {url[:100]}...")
+
+    # Cria requisição com headers apropriados
+    req = urllib.request.Request(
+        url,
+        headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/png,image/*,*/*',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://mermaid.ink/'
+        }
+    )
+
+    # Faz o download da imagem
+    with urllib.request.urlopen(req, timeout=15) as response:
+        image_data = response.read()
+        print(f"[MERMAID] ✅ Imagem recebida: {len(image_data)} bytes")
+        _debug_log(f"Imagem recebida: {len(image_data)} bytes")
+
+    # Valida se recebeu dados de imagem
+    if len(image_data) < 100:
+        _debug_log(f"⚠️  Resposta muito pequena ({len(image_data)} bytes), provavelmente erro")
+        return None
+
+    return image_data
+
+
+def _embed_mermaid_blocks_as_html_images(markdown_content: str) -> str:
+    """Substitui blocos ```mermaid por imagens inline (data URI) no markdown."""
+    if not markdown_content:
+        return markdown_content
+
+    markdown_content = _normalize_markdown_for_mermaid(markdown_content)
+
+    # Aceita fences ``` ou ~~~, com indentacao opcional e final de linha LF/CRLF.
+    # Isso evita perder Mermaid quando o markdown vem com variacoes de formato.
+    pattern = re.compile(
+        r"(^|\n)[ \t]*(?P<fence>`{3,}|~{3,})[ \t]*mermaid(?:[^\r\n]*)[\r\n]+"
+        r"(?P<body>.*?)"
+        r"(?:[\r\n]+[ \t]*(?P=fence)[ \t]*(?=\r?\n|$))",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def _replace(match: re.Match) -> str:
+        mermaid_code = (match.group("body") or "").strip()
+        try:
+            image_data = _fetch_mermaid_png_bytes(mermaid_code)
+        except Exception as exc:
+            print(f"[MERMAID] ⚠️ Falha ao gerar imagem para HTML: {type(exc).__name__}: {exc}")
+            return match.group(0)
+
+        if not image_data:
+            return match.group(0)
+
+        image_b64 = base64.b64encode(image_data).decode("ascii")
+        escaped_code = html_utils.escape(mermaid_code)
+        return (
+            (match.group(1) or "") +
+            "<div class=\"mermaid-diagram\">"
+            f"<img src=\"data:image/png;base64,{image_b64}\" alt=\"Diagrama Mermaid\" />"
+            f"<pre class=\"mermaid-source\">{escaped_code}</pre>"
+            "</div>"
+        )
+
+    return pattern.sub(_replace, markdown_content)
 
 
 def _apply_text_formatting(text: str) -> str:
@@ -219,19 +314,149 @@ def _apply_text_formatting(text: str) -> str:
     Returns:
         Texto com tags HTML do ReportLab
     """
+    # ReportLab não aceita <br> cru; converte para quebra de linha real.
+    text = text.replace('<br>', '\n')
+
     # Bold: **texto** -> <b>texto</b>
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     return text
+
+
+def _is_table_divider_line(line: str) -> bool:
+    """Detecta linha separadora de tabela Markdown (ex: |---|:---:|---|)."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    normalized = stripped.strip('|')
+    parts = [p.strip() for p in normalized.split('|')]
+    if not parts:
+        return False
+    return all(bool(p) and re.fullmatch(r':?-{3,}:?', p) for p in parts)
+
+
+def _split_table_cells(line: str) -> list[str]:
+    """Quebra uma linha de tabela em células, tolerando ausência de pipes nas pontas."""
+    cleaned = line.strip().strip('|')
+    return [cell.strip().replace('<br>', '\n') for cell in cleaned.split('|')]
+
+
+def _looks_like_table_row(line: str) -> bool:
+    """Heurística para linha de tabela: possui ao menos um pipe e não é vazia."""
+    stripped = line.strip()
+    return bool(stripped) and '|' in stripped
+
+
+def _calc_table_col_widths(table_rows: list[list[str]], available_width: float) -> list[float]:
+    """Calcula larguras proporcionais das colunas com limites para evitar overflow."""
+    num_cols = max((len(r) for r in table_rows), default=1)
+    min_w = 55.0
+    max_w = 170.0
+
+    col_scores = [1.0] * num_cols
+    for row in table_rows:
+        for idx in range(num_cols):
+            cell = row[idx] if idx < len(row) else ''
+            # Score simples baseado no maior token e tamanho total para favorecer colunas textuais.
+            max_token = max((len(tok) for tok in re.split(r'\s+', cell) if tok), default=1)
+            score = 0.6 * min(max_token, 30) + 0.4 * min(len(cell), 80)
+            col_scores[idx] = max(col_scores[idx], score)
+
+    total = sum(col_scores) or float(num_cols)
+    widths = [max(min_w, min(max_w, available_width * (s / total))) for s in col_scores]
+
+    current = sum(widths)
+    if current > available_width:
+        factor = available_width / current
+        widths = [max(min_w, w * factor) for w in widths]
+
+    overflow = sum(widths) - available_width
+    if overflow > 0:
+        idx = max(range(len(widths)), key=lambda i: widths[i])
+        widths[idx] = max(min_w, widths[idx] - overflow)
+
+    return widths
+
+
+def _normalize_table_rows(table_rows: list[list[str]]) -> list[list[str]]:
+    """Normaliza cardinalidade de colunas, mesclando excedentes na última coluna."""
+    if not table_rows:
+        return []
+    num_cols = max(len(r) for r in table_rows)
+    normalized = []
+    for row in table_rows:
+        if len(row) == num_cols:
+            normalized.append(row)
+            continue
+        if len(row) > num_cols:
+            merged_last = ' | '.join(row[num_cols - 1:])
+            normalized.append(row[:num_cols - 1] + [merged_last])
+            continue
+        normalized.append(row + [''] * (num_cols - len(row)))
+    return normalized
+
+
+def _build_table_flowable(table_rows: list[list[str]], styles) -> Table:
+    """Cria Table do ReportLab com quebra de linha e largura ajustada à página."""
+    normalized_rows = _normalize_table_rows(table_rows)
+    available_width = A4[0] - 144  # página A4 com margens laterais de 72pt
+    col_widths = _calc_table_col_widths(normalized_rows, available_width)
+
+    formatted_rows = []
+    for row_idx, row in enumerate(normalized_rows):
+        formatted_row = []
+        for cell in row:
+            cell_text = _apply_text_formatting(cell)
+            style = styles['TableHeader'] if row_idx == 0 else styles['TableCell']
+            formatted_row.append(Paragraph(cell_text, style))
+        formatted_rows.append(formatted_row)
+
+    table = Table(
+        formatted_rows,
+        colWidths=col_widths,
+        repeatRows=1,
+        splitByRow=1,
+        hAlign='LEFT',
+    )
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 3),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ]))
+    return table
 
 
 def parse_markdown_to_reportlab(markdown_text: str) -> list:
     """
     Converte markdown para elementos do ReportLab (Platypus).
     ReportLab suporta Unicode completo, então não precisa limpar caracteres especiais.
-    
+
+    O markdown que chega pode vir com headings coladas à esquerda sem
+    quebras de linha (ex: "# Título ## Subtítulo texto"). Nesses casos a
+    parser original tratava tudo como um único parágrafo/heading gigante,
+    eventualmente causando exceções do ReportLab por texto muito longo.
+
+    Por isso, logo de início normalizamos o texto:
+      * Inserimos uma quebra de linha antes de qualquer marcador de heading
+        (#, ##, ###, etc.) que não esteja no começo de uma linha.
+      * Também garantimos que todas as linhas terminem com '\n' para que o
+        split abaixo funcione corretamente.
+
     Returns:
         Lista de elementos Flowable do ReportLab
     """
+    # Normaliza headings que aparecem no meio de linhas.
+    # Ex: "...Câmbio ##1. CONTEXTO..." -> "...Câmbio\n##1. CONTEXTO..."
+    # Evita quebrar casos como "C#" exigindo que o char anterior nao seja alfanumerico.
+    markdown_text = re.sub(r'(?<!\n)(?<!\w)(#{1,6})(?=\s*\S)', r'\n\1', markdown_text)
+    
     styles = getSampleStyleSheet()
     story = []
     
@@ -362,90 +587,73 @@ def parse_markdown_to_reportlab(markdown_text: str) -> list:
             i += 1
             continue
         
-        # Headers
-        if line.startswith('# '):
+        # Headers (níveis 1-6, com ou sem espaço após '#')
+        heading_match = re.match(r'^\s*(#{1,6})\s*(.+?)\s*$', line)
+        if heading_match:
             if in_list and list_items:
                 story.append(ListFlowable(list_items, bulletType='bullet'))
                 list_items = []
                 in_list = False
-            story.append(Paragraph(_apply_text_formatting(line[2:]), styles['CustomTitle']))
-            
-        elif line.startswith('## '):
-            if in_list and list_items:
-                story.append(ListFlowable(list_items, bulletType='bullet'))
-                list_items = []
-                in_list = False
-            story.append(Spacer(1, 0.2*inch))
-            story.append(Paragraph(_apply_text_formatting(line[3:]), styles['CustomHeading2']))
-            
-        elif line.startswith('### '):
-            if in_list and list_items:
-                story.append(ListFlowable(list_items, bulletType='bullet'))
-                list_items = []
-                in_list = False
-            story.append(Paragraph(_apply_text_formatting(line[4:]), styles['CustomHeading3']))
+            level = len(heading_match.group(1))
+            heading_text = _apply_text_formatting(heading_match.group(2))
+            if level == 1:
+                story.append(Paragraph(heading_text, styles['CustomTitle']))
+            elif level == 2:
+                story.append(Spacer(1, 0.2*inch))
+                story.append(Paragraph(heading_text, styles['CustomHeading2']))
+            else:
+                story.append(Paragraph(heading_text, styles['CustomHeading3']))
         
         # Tables
-        elif '|' in line and line.strip().startswith('|'):
+        elif _looks_like_table_row(line):
             if in_list and list_items:
                 story.append(ListFlowable(list_items, bulletType='bullet'))
                 list_items = []
                 in_list = False
-                
+
             if not in_table:
+                # Só inicia bloco de tabela se há indicador claro de tabela.
+                next_line = lines[i + 1] if i + 1 < len(lines) else ''
+                has_header_separator = _is_table_divider_line(next_line)
+                if not has_header_separator and not line.strip().startswith('|'):
+                    # Texto comum com pipe (não tabela)
+                    story.append(Paragraph(_apply_text_formatting(line.strip()), styles['CustomBody']))
+                    i += 1
+                    continue
                 in_table = True
                 table_rows = []
-            
-            # Remove pipes das extremidades e split
-            cells = [cell.strip() for cell in line.strip('|').split('|')]
-            
-            # Pula linhas de separação (|---|---|)
-            if all(re.match(r'^[-:]+$', cell.strip()) for cell in cells if cell.strip()):
+
+            # Linha separadora de header: ignora
+            if _is_table_divider_line(line):
                 i += 1
                 continue
-            
-            table_rows.append(cells)
-            
-            # Verifica se a próxima linha ainda é tabela
-            if i + 1 >= len(lines) or '|' not in lines[i + 1]:
-                # Renderiza a tabela
+
+            if _looks_like_table_row(line):
+                table_rows.append(_split_table_cells(line))
+                # Verifica linhas de continuação da última célula.
+                # Isso evita que conteúdo multiline de célula "escape" como lista.
+                while i + 1 < len(lines):
+                    nxt = lines[i + 1]
+                    nxt_stripped = nxt.strip()
+                    if not nxt_stripped:
+                        break
+                    if _looks_like_table_row(nxt) or _is_table_divider_line(nxt):
+                        break
+                    if re.match(r'^(#{1,6})\s*', nxt_stripped) or nxt_stripped.startswith('```'):
+                        break
+                    if table_rows and table_rows[-1]:
+                        table_rows[-1][-1] = (table_rows[-1][-1] + '\n' + nxt_stripped).strip()
+                        i += 1
+                        continue
+                    break
+
+            # Fecha tabela quando a próxima linha não aparenta pertencer a tabela.
+            next_line = lines[i + 1] if i + 1 < len(lines) else ''
+            if i + 1 >= len(lines) or (not _looks_like_table_row(next_line) and not _is_table_divider_line(next_line)):
                 if table_rows:
-                    # Calcula largura disponível (A4 = 595 pts, margens = 72*2)
-                    available_width = A4[0] - 144  # 451 pts
-                    num_cols = len(table_rows[0])
-                    col_width = available_width / num_cols
-                    col_widths = [col_width] * num_cols
-                    
-                    # Converte células para Paragraphs para permitir quebra de linha
-                    formatted_rows = []
-                    for row_idx, row in enumerate(table_rows):
-                        formatted_row = []
-                        for cell in row:
-                            # Aplica formatação de texto (negrito, etc.)
-                            cell_text = _apply_text_formatting(cell)
-                            # Usa estilo diferente para header vs body
-                            if row_idx == 0:
-                                formatted_row.append(Paragraph(cell_text, styles['TableHeader']))
-                            else:
-                                formatted_row.append(Paragraph(cell_text, styles['TableCell']))
-                        formatted_rows.append(formatted_row)
-                    
-                    t = Table(formatted_rows, colWidths=col_widths, repeatRows=1)
-                    t.setStyle(TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                        ('FONTSIZE', (0, 0), (-1, 0), 9),
-                        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                        ('TOPPADDING', (0, 0), (-1, -1), 6),
-                        ('LEFTPADDING', (0, 0), (-1, -1), 4),
-                        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-                        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                        ('GRID', (0, 0), (-1, -1), 0.5, colors.black)
-                    ]))
+                    t = _build_table_flowable(table_rows, styles)
                     story.append(t)
-                    story.append(Spacer(1, 0.2*inch))
+                    story.append(Spacer(1, 0.2 * inch))
                 in_table = False
                 table_rows = []
         
@@ -493,6 +701,70 @@ def parse_markdown_to_reportlab(markdown_text: str) -> list:
 _PDF_TIMEOUT = 120
 
 
+def _build_html_document(markdown_content: str) -> str:
+    """Converte markdown em HTML completo para renderizacao via WeasyPrint."""
+    if markdown_lib is None:
+        raise RuntimeError("Biblioteca 'markdown' nao instalada")
+
+    markdown_with_images = _embed_mermaid_blocks_as_html_images(markdown_content or "")
+
+    body_html = markdown_lib.markdown(
+        markdown_with_images,
+        extensions=["tables", "fenced_code", "sane_lists", "nl2br"],
+        output_format="xhtml1",
+    )
+
+    return f"""
+<!doctype html>
+<html lang=\"pt-BR\">
+<head>
+  <meta charset=\"utf-8\" />
+  <style>
+    @page {{ size: A4; margin: 20mm; }}
+    body {{ font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #1a1a1a; line-height: 1.4; }}
+    h1 {{ font-size: 24px; margin: 0 0 16px 0; text-align: center; }}
+    h2 {{ font-size: 18px; margin: 16px 0 8px 0; color: #2c3e50; }}
+    h3, h4, h5, h6 {{ font-size: 14px; margin: 12px 0 6px 0; color: #34495e; }}
+    p {{ margin: 6px 0; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 10px 0; table-layout: fixed; }}
+    th, td {{ border: 1px solid #333; padding: 6px; vertical-align: top; word-wrap: break-word; white-space: pre-wrap; }}
+    th {{ background: #efefef; }}
+    ul, ol {{ margin: 6px 0 6px 20px; }}
+    code {{ font-family: "Courier New", monospace; }}
+    pre {{ background: #f5f5f5; border: 1px solid #ddd; padding: 8px; overflow-x: auto; white-space: pre-wrap; }}
+        .mermaid-diagram {{ margin: 12px 0; text-align: center; page-break-inside: avoid; }}
+        .mermaid-diagram img {{
+            display: block;
+            margin: 0 auto;
+            width: auto;
+            height: auto;
+            max-width: 100%;
+            max-height: 150mm;
+            object-fit: contain;
+            border: 1px solid #ddd;
+        }}
+        .mermaid-source {{ text-align: left; font-size: 9px; margin-top: 6px; }}
+  </style>
+</head>
+<body>
+{body_html}
+</body>
+</html>
+""".strip()
+
+
+def _build_pdf_from_html(markdown_content: str) -> bytes:
+    """Gera PDF via pipeline Markdown -> HTML -> PDF (WeasyPrint)."""
+    if HTML is None:
+        raise RuntimeError("Biblioteca 'weasyprint' nao instalada")
+
+    html = _build_html_document(markdown_content)
+    pdf_bytes = HTML(string=html).write_pdf()
+    if not pdf_bytes:
+        raise RuntimeError("WeasyPrint retornou PDF vazio")
+    return pdf_bytes
+
+
 def _build_pdf(markdown_content: str) -> bytes:
     """
     Executa o processamento síncrono e CPU-intensivo do ReportLab.
@@ -501,6 +773,19 @@ def _build_pdf(markdown_content: str) -> bytes:
     Returns:
         Bytes do arquivo PDF gerado.
     """
+    markdown_content = _normalize_markdown_for_mermaid(markdown_content or "")
+
+    renderer = os.getenv("PDF_RENDERER", "auto").strip().lower()
+    # Novo pipeline para teste: Markdown -> HTML -> PDF.
+    # Em modo "auto", tenta HTML primeiro e faz fallback para ReportLab.
+    if renderer in {"auto", "html"}:
+        try:
+            return _build_pdf_from_html(markdown_content)
+        except Exception as html_err:
+            if renderer == "html":
+                # Mesmo em modo html, mantemos fallback para nao quebrar o pipeline.
+                print(f"[PDF] Falha no renderizador HTML, usando fallback ReportLab: {html_err}")
+
     try:
         pdf_buffer = BytesIO()
         doc = SimpleDocTemplate(

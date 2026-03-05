@@ -517,3 +517,65 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
         ),
     }
 
+
+async def generate_pdf_tobe_from_state(tool_context: ToolContext) -> Dict[str, Any]:
+    """
+    Lê o markdown TO-BE do state (tobe_markdown) e gera o artefato documento_processo_tobe.pdf.
+    Esta tool é determinística: não depende do LLM, apenas lê o state e gera o arquivo.
+    Deve ser chamada APÓS o tobe_subagent concluir.
+
+    Returns:
+        Dicionário com status da operação.
+    """
+    markdown_content = tool_context.state.get("tobe_markdown", "")
+
+    if not markdown_content or not markdown_content.strip():
+        return {
+            "status": "error",
+            "message": "State 'tobe_markdown' está vazio. O tobe_subagent não gerou o markdown.",
+        }
+
+    # Remove code fences se presentes (```json ... ``` ou ```markdown ... ```)
+    cleaned = markdown_content.strip()
+    if cleaned.startswith("```"):
+        # Remove a primeira linha de code fence e a última
+        lines = cleaned.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines)
+
+    try:
+        pdf_bytes = await asyncio.wait_for(
+            asyncio.to_thread(_build_pdf, cleaned),
+            timeout=_PDF_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return {"status": "error", "message": f"Timeout ao gerar PDF TO-BE após {_PDF_TIMEOUT}s."}
+    except Exception as e:
+        return {"status": "error", "message": f"Erro ao gerar PDF TO-BE: {str(e)[:200]}"}
+
+    if not pdf_bytes or len(pdf_bytes) == 0:
+        return {"status": "error", "message": "PDF TO-BE gerado está vazio."}
+
+    artifact_part = Part(
+        inline_data=Blob(
+            data=pdf_bytes,
+            mime_type="application/pdf",
+        )
+    )
+
+    version = await tool_context.save_artifact(
+        filename="documento_processo_tobe.pdf",
+        artifact=artifact_part,
+    )
+
+    return {
+        "status": "success",
+        "message": (
+            f"Arquivo 'documento_processo_tobe.pdf' (versão {version}) gerado com sucesso "
+            "e disponível para download."
+        ),
+    }
+

@@ -13,10 +13,12 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types as genai_types
 from as_is.agent import root_agent as as_is_root_agent
 from agente_gerador_pdf_md.agent import pdf_subagent as agente_gerador_pdf_md_root_agent
+from agente_gerador_md_tobe.agent import tobe_subagent
 from document_processor.tools.generate_artifacts import (
     save_to_firestore_from_state,
     generate_xlsx_from_state,
     generate_pdf_from_state,
+    generate_pdf_tobe_from_state,
     save_mermaid_from_state,
 )
 from document_processor.tools.spanner_tool import save_to_spanner_from_state
@@ -101,6 +103,7 @@ async def before_model_callback(
 
 as_is_agent = agent_tool.AgentTool(agent=as_is_root_agent)
 pdf_subagent = agent_tool.AgentTool(agent=agente_gerador_pdf_md_root_agent)
+tobe_subagent_tool = agent_tool.AgentTool(agent=tobe_subagent)
 
 def preparar_state_inicial(tool_context: ToolContext) -> dict:
     """
@@ -139,6 +142,26 @@ root_agent = Agent(
         Quando o usuário enviar um arquivo de processo, execute os passos abaixo
         EM SEQUÊNCIA, sem pular nenhum, e sem aguardar confirmação do usuário.
 
+        REGRA DE EXECUÇÃO COMPLETA (BLOQUEANTE):
+            Você está PROIBIDO de enviar resposta final ao usuário antes de concluir
+            TODOS os passos obrigatórios até generate_pdf_tobe_from_state.
+            Se parar antes do PASSO 10, a execução é considerada inválida.
+
+            CHECKLIST OBRIGATÓRIO (na ordem):
+            1) preparar_state_inicial
+            2) as_is_agent
+            3) save_to_firestore_from_state
+            4) save_to_spanner_from_state
+            5) pdf_subagent
+            6) generate_xlsx_from_state
+            7) generate_pdf_from_state
+            8) save_mermaid_from_state
+            9) tobe_subagent_tool
+            10) generate_pdf_tobe_from_state
+
+            Você só pode executar o PASSO 11 depois de confirmar que os 10 itens
+            acima já foram chamados no turno atual.
+
         PASSO 1 - Acolhimento:
             Confirme o recebimento do arquivo e informe que irá gerar a planilha
             Excel e o documento PDF do processo.
@@ -172,14 +195,28 @@ root_agent = Agent(
             Chame a tool 'generate_xlsx_from_state' SEM PARÂMETROS.
             Guarde a mensagem retornada como <MENSAGEM_XLSX>.
 
-        PASSO 9 - Geração do documento PDF (OBRIGATÓRIO — NÃO PULE):
+        PASSO 9 - Geração do documento PDF AS IS (OBRIGATÓRIO — NÃO PULE):
             Chame a tool 'generate_pdf_from_state' SEM PARÂMETROS.
             Guarde a mensagem retornada como <MENSAGEM_PDF>.
+        PASSO 9.1 - Persistência do Mermaid no Spanner (OBRIGATÓRIO — NÃO PULE):
+            Chame a tool 'save_mermaid_from_state' SEM PARÂMETROS.
+            Aguarde o retorno antes de continuar.
+            REGRA CRÍTICA: NÃO finalize a resposta ao usuário após este passo.
+            Após concluir o PASSO 9.1, continue obrigatoriamente para o PASSO 10.
+        PASSO 10 - Geração do documento TO-BE (OBRIGATÓRIO — NÃO PULE):
+            Chame a tool 'tobe_subagent_tool' com:
+                request: "Gere o documento Markdown completo do processo TO-BE utilizando o JSON e o modelo disponíveis no state."
+            Aguarde o retorno antes de continuar.
+            Chame a tool 'generate_pdf_tobe_from_state' SEM PARÂMETROS.
+            Guarde a mensagem retornada como <MENSAGEM_PDF_TOBE>.
+            REGRA CRÍTICA: se generate_pdf_from_state já tiver sido executada,
+            ainda assim é obrigatório continuar até concluir este passo.
 
-        PASSO 10 - Apresentação do resultado:
+        PASSO 11 - Apresentação do resultado:
             Responda ao usuário usando EXATAMENTE o template abaixo.
             Substitua <MENSAGEM_XLSX> pela mensagem LITERAL retornada por generate_xlsx_from_state
             e <MENSAGEM_PDF> pela mensagem LITERAL retornada por generate_pdf_from_state
+            e <MENSAGEM_PDF_TOBE> pela mensagem LITERAL retornada por generate_pdf_tobe_from_state
             — sem modificar nenhum caractere.
 
             ---------------------------------------------------------------
@@ -190,13 +227,17 @@ root_agent = Agent(
             📊 **Planilha Excel**
             <MENSAGEM_XLSX>
 
-            📄 **Documento PDF**
+            📄 **Documento PDF AS-IS**
             <MENSAGEM_PDF>
+
+            📄 **Documento PDF TO-BE**
+            <MENSAGEM_PDF_TOBE>
             ---------------------------------------------------------------
 
             REGRAS CRÍTICAS para o PASSO 10:
             ✅ Substitua <MENSAGEM_XLSX> pela mensagem LITERAL de generate_xlsx_from_state
             ✅ Substitua <MENSAGEM_PDF> pela mensagem LITERAL de generate_pdf_from_state
+            ✅ Substitua <MENSAGEM_PDF_TOBE> pela mensagem LITERAL de generate_pdf_tobe_from_state
             ✅ Preserve cada caractere de cada mensagem (aspas, número de versão, pontuação)
             ❌ NÃO reescreva as mensagens das tools com suas próprias palavras
             ❌ NÃO omita o nome dos arquivos presentes nas mensagens das tools
@@ -211,7 +252,7 @@ root_agent = Agent(
             - Integridade: Não modifique a saída lógica das ferramentas.
         ═══════════════════════════════════════════════════════════════════════
     """,
-    tools=[preparar_state_inicial, as_is_agent, save_to_firestore_from_state, save_to_spanner_from_state, pdf_subagent, generate_xlsx_from_state, generate_pdf_from_state, save_mermaid_from_state],
+    tools=[preparar_state_inicial, as_is_agent, save_to_firestore_from_state, save_to_spanner_from_state, pdf_subagent, generate_xlsx_from_state, generate_pdf_from_state, save_mermaid_from_state, tobe_subagent_tool, generate_pdf_tobe_from_state],
     before_model_callback=before_model_callback,
     before_tool_callback=_before_tool_cb,
     after_tool_callback=_after_tool_cb,

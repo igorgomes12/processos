@@ -11,6 +11,7 @@ from agente_gerador_pdf_md.tools.markdown_to_pdf_tool import (
     parse_markdown_to_reportlab,
     _build_pdf,
 )
+import agente_gerador_pdf_md.tools.markdown_to_pdf_tool as pdf_tool
 
 # ReportLab elements
 from reportlab.platypus import Paragraph, Spacer, Table, ListFlowable
@@ -114,10 +115,103 @@ Parágrafo de texto.
         paragraphs = [e for e in result if isinstance(e, Paragraph)]
         assert len(paragraphs) >= 1
 
+    def test_indented_heading_is_parsed_as_heading(self):
+        md = "   ## Seção com indentação"
+        result = parse_markdown_to_reportlab(md)
+        paragraphs = [e for e in result if isinstance(e, Paragraph)]
+        assert len(paragraphs) >= 1
+        # Não deve manter o marcador markdown no texto renderizado.
+        assert all(not str(getattr(p, "text", "")).lstrip().startswith("##") for p in paragraphs)
+
+    def test_inline_heading_without_space_is_split_and_parsed(self):
+        md = "Texto introdutório. ##Seção seguinte"
+        result = parse_markdown_to_reportlab(md)
+        paragraphs = [e for e in result if isinstance(e, Paragraph)]
+        assert len(paragraphs) >= 2
+        assert all(not str(getattr(p, "text", "")).lstrip().startswith("##") for p in paragraphs)
+
 
 # ─── _build_pdf ──────────────────────────────────────────────────────────────
 
 class TestBuildPdf:
+    def test_mermaid_block_uses_html_renderer_in_auto_mode(self, monkeypatch):
+        monkeypatch.setenv("PDF_RENDERER", "auto")
+
+        def _fake_html_renderer(*args, **kwargs):
+            return b"HTML_RENDERER_USED"
+
+        monkeypatch.setattr(pdf_tool, "_build_pdf_from_html", _fake_html_renderer)
+
+        md = """```mermaid
+flowchart TD
+A[Inicio] --> B[Fim]
+```"""
+        result = _build_pdf(md)
+        assert result == b"HTML_RENDERER_USED"
+
+    def test_build_html_document_embeds_mermaid_as_data_uri(self, monkeypatch):
+        def _fake_mermaid_bytes(*args, **kwargs):
+            return b"fakepngbytes"
+
+        monkeypatch.setattr(pdf_tool, "_fetch_mermaid_png_bytes", _fake_mermaid_bytes)
+
+        md = """# Fluxo
+
+```mermaid
+flowchart TD
+A[Inicio] --> B[Fim]
+```
+"""
+        html = pdf_tool._build_html_document(md)
+        assert "data:image/png;base64," in html
+        assert "Diagrama Mermaid" in html
+
+    def test_build_html_document_embeds_mermaid_with_crlf_and_indentation(self, monkeypatch):
+        def _fake_mermaid_bytes(*args, **kwargs):
+            return b"fakepngbytes"
+
+        monkeypatch.setattr(pdf_tool, "_fetch_mermaid_png_bytes", _fake_mermaid_bytes)
+
+        md = "# Fluxo\r\n\r\n   ```mermaid\r\nflowchart TD\r\nA --> B\r\n   ```\r\n"
+        html = pdf_tool._build_html_document(md)
+        assert "data:image/png;base64," in html
+        assert "Diagrama Mermaid" in html
+
+    def test_build_html_document_embeds_inline_mermaid_block(self, monkeypatch):
+        def _fake_mermaid_bytes(*args, **kwargs):
+            return b"fakepngbytes"
+
+        monkeypatch.setattr(pdf_tool, "_fetch_mermaid_png_bytes", _fake_mermaid_bytes)
+
+        md = "# Fluxo ```mermaid flowchart TD A[Inicio] --> B[Fim] ```"
+        html = pdf_tool._build_html_document(md)
+        assert "data:image/png;base64," in html
+        assert "Diagrama Mermaid" in html
+
+    def test_html_renderer_fallbacks_to_reportlab_when_html_fails(self, monkeypatch):
+        monkeypatch.setenv("PDF_RENDERER", "auto")
+
+        def _raise_html(*args, **kwargs):
+            raise RuntimeError("html renderer error")
+
+        monkeypatch.setattr(pdf_tool, "_build_pdf_from_html", _raise_html)
+
+        result = _build_pdf("# Teste\n\nConteudo simples")
+        assert isinstance(result, bytes)
+        assert result[:4] == b"%PDF"
+
+    def test_html_renderer_mode_keeps_reportlab_fallback(self, monkeypatch):
+        monkeypatch.setenv("PDF_RENDERER", "html")
+
+        def _raise_html(*args, **kwargs):
+            raise RuntimeError("weasyprint not available")
+
+        monkeypatch.setattr(pdf_tool, "_build_pdf_from_html", _raise_html)
+
+        result = _build_pdf("# Teste\n\nConteudo simples")
+        assert isinstance(result, bytes)
+        assert result[:4] == b"%PDF"
+
     def test_returns_bytes(self):
         result = _build_pdf("# Teste\n\nConteúdo simples.")
         assert isinstance(result, bytes)

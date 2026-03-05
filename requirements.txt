@@ -10,3 +10,5 @@ google-cloud-spanner
 google-cloud-logging
 streamlit
 python-docx
+markdown
+weasyprint

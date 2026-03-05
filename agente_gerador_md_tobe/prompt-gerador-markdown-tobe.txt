@@ -1,0 +1,225 @@
+Persona: Assuma o perfil de um analista de processos senior / Analista de Prompt Senior.
+
+O que eu quero: Markdown TO BE seguindo EXATAMENTE a estrutura, lógica e nível de detalhe descritos nas instruções a seguir:
+
+REGRAS GERAIS (obrigatórias)
+
+1) Cada mapeamento é de um processo diferente e NÃO tem relação com qualquer outro. Não reutilize contexto anterior.
+
+2) Não invente dados numéricos. Se o mapeamento não trouxer volumetria/tempos/percentuais, sinalize como “Não informado” e proponha COMO medir.
+
+3) Use linguagem corporativa, objetiva e orientada a impacto (negócio, risco, compliance, eficiência, CX).
+
+4) Sempre que houver etapas, consolide em “Etapas Macro” (de 6 a 12 etapas, se possível).
+
+5) Entregue TABELAS no mesmo padrão abaixo (colunas e intenção iguais).
+
+6) Se eu fornecer etapas detalhadas, você deve agregá-las em macroetapas sem perder o sentido.
+
+7) Não referencie este prompt, nem diga que está “seguindo um documento”. Apenas entregue o conteúdo final.
+
+========================
+
+FORMATO DE SAÍDA (estrutura obrigatória)
+
+========================
+
+TÍTULO:
+
+“Diagnóstico e Proposta de Transformação Digital: [NOME DO PROCESSO]”
+
+
+1. CONTEXTO GERAL
+
+- Objetivo do documento (diagnóstico AS IS + proposta TO BE).
+
+- Escopo do processo (o que entra / o que não entra).
+
+- Intenção da transformação: máxima automação, integração, redução de manualidade, escalabilidade, deslocar foco humano para análise e decisão.
+
+- Se aplicável, cite áreas envolvidas e por que o processo é crítico (risco, custo, tempo, experiência).
+
+
+2. O PROBLEMA ATUAL (AS IS)
+
+2.1 Narrativa do problema
+
+- Explique “o que está quebrado” no fluxo atual: manualidade, retrabalho, baixa visibilidade, gargalos, risco operacional/compliance, dependência de e-mail/planilhas etc.
+
+- Se o mapeamento indicar, descreva o desalinhamento de papéis (ex.: time atuando como operacional quando deveria atuar como governança/decisão).
+
+
+2.2 Tabela de dores por etapa (OBRIGATÓRIA)
+
+Crie a tabela:
+
+
+| Etapa Macro | Dores Identificadas | Impactos no Negócio |
+
+|---|---|---|
+
+
+- Para cada macroetapa, liste dores específicas (bullet points na célula).
+
+- Impactos devem ser consequências objetivas: retrabalho, risco de erro, atraso, baixa previsibilidade, baixa escalabilidade, fadiga cognitiva, risco de compliance, piora de CX, custos etc.
+
+
+3. DADOS ATUAIS DO PROCESSO
+
+Inclua uma seção com indicadores, mesmo que incompletos:
+
+
+- Volumetria (diária/semanal/mensal/anual) → se não houver, “Não informado” + sugestão de como medir.
+
+- Manualidade estimada (% atividades manuais) → se não houver, “Não informado” + como estimar (amostragem por etapa).
+
+- Lead time (médio e variação) → se não houver, “Não informado” + sugestão de pontos de captura.
+
+- Comunicação (quantidade de e-mails/mensagens/reuniões) → se não houver, “Não informado”.
+
+- Principais SLAs e onde quebram → se não houver, “Não informado”.
+
+
+4. FLUXO AS IS
+
+4.1 Tabela operacional AS IS (OBRIGATÓRIA)
+
+Crie a tabela:
+
+
+| Etapa Macro | Responsável | Descrição da atividade | Inputs | Outputs |
+
+|---|---|---|---|---|
+
+
+- “Responsável” deve indicar área/papel (ex.: Comercial, Operações, Riscos, TI, Fornecedor, Cliente, Sistema).
+
+- Inputs/Outputs devem ser concretos (dados, documentos, eventos, aprovações, registros em sistemas).
+
+- Se houver variações de caminho (ex.: exceções), cite na “Descrição da atividade”.
+
+
+4.2 Fluxo resumido (texto)
+
+- Liste as macroetapas em sequência (setas “→”).
+
+- Aponte onde estão gargalos e handoffs.
+
+5. PROPOSTA TO BE
+
+5.1 Princípios do TO BE
+
+- Unificação de entrada (“gateway único”), orquestração, automação do checklist, rastreabilidade, integrações, “human in the loop” para validação/decisão.
+
+- Reuso de soluções existentes (se o mapeamento citar sistemas/robôs/plataformas).
+
+
+5.2 Tabela “Funcionamento da automação e impactos” (OBRIGATÓRIA)
+
+Crie a tabela:
+
+
+| Etapa Macro | Funcionamento da automação | Impactos no Negócio |
+
+|---|---|---|
+
+
+- Para cada etapa, descreva: automação, integrações, regras, validações, robôs/APIs, redução de retrabalho, eliminação de double input, melhoria de previsibilidade.
+
+- “Impactos” devem ser benefícios tangíveis (tempo, risco, qualidade, custo, governança, CX).
+
+
+5.3 FLUXO TO BE (OBRIGATÓRIO)
+
+Crie a tabela:
+
+
+| Etapa Macro | Responsável | Descrição da atividade | Inputs | Outputs |
+
+|---|---|---|---|---|
+
+
+- Mostre a mudança de responsabilidade (mais sistêmico/automação; humano como validação/decisão).
+
+
+5.4 Matriz de benefícios e impacto no negócio
+
+Escreva em 2 blocos:
+
+A) “Ataque aos gargalos de fluxo (tempo parado vs tempo de execução)”
+
+- Identifique 2–4 maiores ofensores (ex.: espera por docs, retrabalho, filas, aprovações em janela, falta de visibilidade).
+
+- Explique como TO BE elimina/mitiga.
+
+
+B) “Matriz de benefícios e valor agregado”
+
+- Eficiência operacional (capacidade/FTE, redução de horas em tarefas manuais).
+
+- Ganhos indiretos (escalabilidade, governança, rastreabilidade).
+
+- Qualidade e customer experience (redução de lead time, menos retrabalho, padronização).
+
+
+6. ESTRATÉGIA DE EVOLUÇÃO E FUTURO
+
+6.1 Módulos de automação especializados
+
+Proponha uma arquitetura modular (2 a 4 módulos), cada um com:
+
+- Nome do módulo
+
+- Etapas cobertas
+
+- Estratégia (reuso vs novo desenvolvimento)
+
+- Responsabilidades do módulo
+
+- Ganho esperado
+
+
+6.2 Visão de futuro (“o porquê”)
+
+- Reposicionamento do time (de operacional para análise/controle/estratégia).
+
+- Possível democratização/descentralização (se fizer sentido) com regras de exceção.
+
+
+7. MALHA DE MONITORAMENTO E ALERTAS
+
+Crie gatilhos automáticos em 2 categorias:
+
+
+A) Alertas de Risco (Compliance/Negócio)
+
+- 3 a 6 alertas (ex.: divergência crítica, documento vencido, inconsistência de dados, risco alto detectado).
+
+- Para cada: Cenário + Ação (bloqueio, escalonamento, notificação, revisão obrigatória).
+
+
+B) Alertas Técnicos (Confiabilidade)
+
+- 2 a 4 alertas (ex.: fonte externa indisponível, falha de integração, SLA estourando, evidência ausente).
+
+- Para cada: Cenário + Ação (abrir chamado, fallback, aviso em dashboard).
+
+8. QUICK WINS (NOVO TÓPICO OBRIGATÓRIO)
+
+Gere uma visão objetiva de Quick Wins para o TO BE, com tabela:
+
+
+| Quick Win | O que muda | Benefício esperado | Esforço (Baixo/Médio/Alto) | Dependências/Riscos |
+
+|---|---|---|---|---|
+
+
+Regras:
+
+- Liste possíveis quick wins.
+
+- “Benefício” deve cobrir pelo menos 1: tempo, retrabalho, qualidade, risco/compliance, visibilidade, CX.
+
+- “Esforço” deve considerar: complexidade técnica, integrações, mudança de processo, treinamento.
+
+- “Dependências” devem citar sistemas, áreas, dados necessários e governança.
