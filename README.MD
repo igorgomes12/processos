@@ -10,7 +10,7 @@ O sistema transforma documentos de processos de negócio (PDF, DOCX, imagens) em
 
 - **Planilha Excel** estruturada (hierarquia N0–N4)
 - **Documento PDF** completo no formato AS-IS
-- **Scripts Mermaid** persistidos no Spanner (1 por N2_Processo)
+- **Scripts Mermaid** persistidos no Postgres (1 por N2_Processo)
 - **Interface de visualização** interativa (Streamlit)
 
 ---
@@ -24,8 +24,8 @@ document_processor  (agente raiz / orquestrador)
 ├── save_to_firestore_from_state    (tool: JSON → Firestore)
 ├── generate_xlsx_from_state        (tool: JSON → Excel)
 ├── agente_gerador_pdf_md           (sub-agente: JSON → Markdown)
-├── generate_pdf_from_state         (tool: Markdown → PDF + Mermaid → Spanner)
-└── save_mermaid_from_state         (tool: Mermaid → Spanner N2_Mermaid)
+├── generate_pdf_from_state         (tool: Markdown → PDF + Mermaid → Postgres)
+└── save_mermaid_from_state         (tool: Mermaid → Postgres n2_mermaid)
 ```
 
 ### Modelos LLM
@@ -47,7 +47,7 @@ agente-processos-main/
 │   ├── agent.py
 │   └── tools/
 │       ├── generate_artifacts.py   # Tools determinísticas (XLSX, PDF, Mermaid)
-│       └── spanner_tool.py         # Persistência no Spanner
+│       └── postgres_tool.py        # Persistência no Postgres
 │
 ├── as_is/                       # Sub-agente de extração estruturada
 │   └── agent.py
@@ -75,30 +75,33 @@ agente-processos-main/
 
 ---
 
-## Database — Google Cloud Spanner (`db-agente-processo`)
+## Database — Cloud SQL for PostgreSQL (`db-agente-processo`)
+
+Instância: `agente-processos-db` (`steady-computer-487217-p6:us-east1:agente-processos-db`).
+Schema completo em `installation_scripts/postgres_schema.sql`.
 
 ### Tabelas
 
 | Tabela | Descrição | PK |
 |--------|-----------|-----|
-| `N0_Frente` | Frente de negócio | `id` |
-| `N1_MacroProcesso` | Macro processo | `id` |
-| `N2_Processo` | Processo | `id` |
-| `N3_Tarefa` | Tarefa | `id` |
-| `N4_Etapa` | Etapa | `id` |
-| `N5_Atributos` | Atributos da etapa | `id` |
-| `N2_Mermaid` | Script Mermaid por processo | `n2_id` (FK → N2_Processo) |
+| `n0_frente` | Frente de negócio | `id` |
+| `n1_macroprocesso` | Macro processo | `id` |
+| `n2_processo` | Processo | `id` |
+| `n3_tarefa` | Tarefa | `id` |
+| `n4_etapa` | Etapa | `id` |
+| `n5_atributos` | Atributos da etapa | `id` |
+| `n2_mermaid` | Script Mermaid por processo | `n2_id` (FK → n2_processo) |
 
 ### Tabelas de Relacionamento (Arestas)
 
 | Tabela | Relacionamento |
 |--------|---------------|
-| `Edge_Has_N1` | N0_Frente → N1_MacroProcesso |
-| `Edge_Has_N2` | N1_MacroProcesso → N2_Processo |
-| `Edge_Has_N3` | N2_Processo → N3_Tarefa |
-| `Edge_Has_N4` | N3_Tarefa → N4_Etapa |
-| `Edge_Has_N5` | N4_Etapa → N5_Atributos |
-| `Edge_Has_Mermaid` | N2_Processo → N2_Mermaid |
+| `edge_has_n1` | n0_frente → n1_macroprocesso |
+| `edge_has_n2` | n1_macroprocesso → n2_processo |
+| `edge_has_n3` | n2_processo → n3_tarefa |
+| `edge_has_n4` | n3_tarefa → n4_etapa |
+| `edge_has_n5` | n4_etapa → n5_atributos |
+| `edge_has_mermaid` | n2_processo → n2_mermaid |
 
 ### Cardinalidade Mermaid
 
@@ -119,14 +122,14 @@ streamlit run dataViz/streamlit_grafo.py
 
 #### Sidebar — Pesquisa de Processos
 - Campo de busca com **Enter** ou botão **Buscar**
-- Pesquisa no Spanner (`N0_Frente`) com filtro `LIKE` (busca parcial por nome da frente)
+- Pesquisa no Postgres (`n0_frente`) com filtro `ILIKE` (busca parcial por nome da frente)
 - Exibe cards com: nome da frente, macro processos vinculados e total de tarefas
 - Conexão reutilizada via `@st.cache_resource`
 
 #### Área Principal — Detalhe do Processo
 
 **Aba: Passo a Passo**
-- Hierarquia completa carregada do Spanner: N1 → N2 → N3 → N4 → N5
+- Hierarquia completa carregada do Postgres: N1 → N2 → N3 → N4 → N5
 - Cada Macro Processo em `st.expander`
 - Por etapa: descrição, entradas/saídas, sistemas envolvidos, KPIs, oportunidades de melhoria
 - Métricas do processo: total de etapas, tarefas, processos e macro processos
@@ -161,10 +164,10 @@ streamlit run dataViz/streamlit_grafo.py
        ↓
 7. generate_pdf_from_state()
    ├→ Artefato: documento_processo.pdf
-   └→ Side-effect: _upsert_mermaid_sync() → Spanner N2_Mermaid
+   └→ Side-effect: _upsert_mermaid_sync() → Postgres n2_mermaid
        ↓
 8. save_mermaid_from_state()
-   └→ Spanner: N2_Mermaid (fallback / idempotente)
+   └→ Postgres: n2_mermaid (fallback / idempotente)
 ```
 
 ### Artefatos Gerados
@@ -211,13 +214,15 @@ streamlit run dataViz/streamlit_grafo.py
 ```env
 GOOGLE_API_KEY=<sua_chave_google_ai_studio>
 MODEL=gemini-2.5-flash          # opcional
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=<senha_da_instancia_cloud_sql>
 ```
 
 ### Credenciais GCP (`credentials.json`)
 
 Service account com permissões:
 - `roles/datastore.user` — Firestore
-- `roles/spanner.databaseUser` — Spanner
+- `roles/cloudsql.client` — Cloud SQL (Postgres, via Cloud SQL Python Connector)
 
 > Não versionar. Adicionar ao `.gitignore`.
 
@@ -246,8 +251,8 @@ streamlit run dataViz/streamlit_grafo.py
 | Dado | Destino | Quando |
 |------|---------|--------|
 | JSON N0–N4 | Firestore (`processos`) | Após extração pelo `as_is` |
-| Hierarquia completa | Spanner (`N0`–`N5` + arestas) | Durante persistência do grafo |
-| Script Mermaid | Spanner (`N2_Mermaid`) | Side-effect de `generate_pdf_from_state` |
+| Hierarquia completa | Postgres (`n0`–`n5` + arestas) | Durante persistência do grafo |
+| Script Mermaid | Postgres (`n2_mermaid`) | Side-effect de `generate_pdf_from_state` |
 | Excel | ADK artifact | Tool `generate_xlsx_from_state` |
 | PDF | ADK artifact | Tool `generate_pdf_from_state` |
 
@@ -260,7 +265,7 @@ O script `deploy.py` publica o agente no **Vertex AI Agent Engine** (Reasoning E
 ### Pré-requisitos
 
 - Google Cloud SDK (`gcloud`) instalado e autenticado
-- APIs habilitadas: `aiplatform`, `firestore`, `spanner`, `cloudbuild`, `storage`
+- APIs habilitadas: `aiplatform`, `firestore`, `sqladmin`, `cloudbuild`, `storage`
 - Bucket GCS de staging: `gs://agente-processos-staging`
 
 ### Executar o deploy
@@ -283,5 +288,5 @@ python deploy.py
 
 - O `document_processor` usa `thinking_budget=0` para evitar respostas vazias ao processar PDFs com labels de confidencialidade (MSIP).
 - A persistência do Mermaid é **side-effect determinístico** de `generate_pdf_from_state` — não depende do LLM chamar `save_mermaid_from_state`.
-- Todas as operações de I/O (Firestore, Spanner, Excel, PDF) são executadas em `asyncio.to_thread()` para não bloquear o event loop do ADK.
+- Todas as operações de I/O (Firestore, Postgres, Excel, PDF) são executadas em `asyncio.to_thread()` para não bloquear o event loop do ADK.
 - O UUID de cada nó é gerado via **UUID v5 determinístico** (`_make_id(n0, n1, n2, ...)`) — reprocessar o mesmo documento é idempotente.

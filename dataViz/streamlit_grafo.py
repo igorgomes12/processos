@@ -1,10 +1,10 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║     MAPA DE PROCESSOS AS-IS  ·  Visualizador de Processos                   ║
-║     Google Cloud Spanner (db-agente-processo) · Streamlit                   ║
+║     Cloud SQL for PostgreSQL (db-agente-processo) · Streamlit               ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-Pesquisa processos na tabela N0_Frente do Spanner e exibe a hierarquia
+Pesquisa processos na tabela n0_frente do Postgres e exibe a hierarquia
 completa N0 → N1 → N2 → N3 → N4 → N5 com Mermaid para o diagrama de fluxo.
 """
 
@@ -16,9 +16,6 @@ from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
-
-# ─── Desabilita métricas internas do Spanner (evita travamento sem roles) ────
-os.environ.setdefault("SPANNER_ENABLE_BUILTIN_METRICS", "false")
 
 # ─── Import do normalizador Mermaid (mesmo usado no pipeline PDF) ────────────
 try:
@@ -41,9 +38,11 @@ _ROOT             = Path(__file__).resolve().parent
 _PROJECT_ROOT     = _ROOT.parent          # raiz do projeto (um nível acima de dataViz/)
 _CREDENTIALS_PATH = _PROJECT_ROOT / "credentials.json"
 
-_GCP_PROJECT      = "steady-computer-487217-p6"
-_SPANNER_INSTANCE = "id-agente-processo"
-_SPANNER_DATABASE = "db-agente-processo"
+_GCP_PROJECT              = "steady-computer-487217-p6"
+_INSTANCE_CONNECTION_NAME = "steady-computer-487217-p6:us-east1:agente-processos-db"
+_DB_NAME                  = "db-agente-processo"
+_DB_USER                  = os.getenv("POSTGRES_USER", "postgres")
+_DB_PASSWORD              = os.getenv("POSTGRES_PASSWORD", "")
 
 
 # ─── CSS Global ──────────────────────────────────────────────────────────────
@@ -376,10 +375,10 @@ def _inject_css() -> None:
     )
 
 
-# ─── Conexão Spanner (singleton) ─────────────────────────────────────────────
+# ─── Conexão Postgres (singleton via Cloud SQL Python Connector) ─────────────
 @st.cache_resource(show_spinner=False)
-def _get_spanner_database():
-    from google.cloud import spanner
+def _get_connector():
+    from google.cloud.sql.connector import Connector
     from google.oauth2 import service_account
 
     if _CREDENTIALS_PATH.exists():
@@ -387,36 +386,40 @@ def _get_spanner_database():
             str(_CREDENTIALS_PATH),
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
-        client = spanner.Client(project=_GCP_PROJECT, credentials=credentials)
-    else:
-        client = spanner.Client(project=_GCP_PROJECT)
-
-    return client.instance(_SPANNER_INSTANCE).database(_SPANNER_DATABASE)
+        return Connector(credentials=credentials)
+    return Connector()
 
 
-def _run_query(sql: str, params: dict | None = None, types: dict | None = None) -> list[dict]:
-    """Executa uma query no Spanner e retorna lista de dicts.
+def _get_connection():
+    connector = _get_connector()
+    return connector.connect(
+        _INSTANCE_CONNECTION_NAME,
+        "pg8000",
+        user=_DB_USER,
+        password=_DB_PASSWORD,
+        db=_DB_NAME,
+    )
 
-    Nota: o SDK do Spanner só popula results.fields (metadados) após a iteração
-    completa do StreamedResultSet. Por isso consumimos todas as linhas com list()
-    antes de acessar fields, evitando o erro 'NoneType has no attribute row_type'.
-    """
-    db = _get_spanner_database()
-    with db.snapshot() as snap:
-        results = snap.execute_sql(sql, params=params or {}, param_types=types or {})
-        rows = list(results)          # consome o stream → popula results.fields
-        fields = [f.name for f in results.fields]
-        return [dict(zip(fields, row)) for row in rows]
+
+def _run_query(sql: str, params: tuple = ()) -> list[dict]:
+    """Executa uma query no Postgres e retorna lista de dicts."""
+    conn = _get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        columns = [c[0] for c in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
 
 
 # ─── Queries de Busca ─────────────────────────────────────────────────────────
 def search_n0_frentes(termo: str) -> list[dict]:
     """
-    Busca N0_Frente por correspondência parcial no campo nome.
+    Busca n0_frente por correspondência parcial no campo nome.
     Retorna lista de dicts com: n0_id, frente_nome, macro_processos, total_tarefas.
     """
-    from google.cloud.spanner_v1 import param_types
-
     busca = f"%{termo.strip()}%"
 
     sql = """
@@ -425,22 +428,18 @@ def search_n0_frentes(termo: str) -> list[dict]:
             f.nome        AS frente_nome,
             STRING_AGG(DISTINCT mp.nome, ', ') AS macro_processos,
             COUNT(DISTINCT t.id)               AS total_tarefas
-        FROM N0_Frente f
-        JOIN Edge_Has_N1 e1  ON f.id     = e1.n0_id
-        JOIN N1_MacroProcesso mp ON e1.n1_id = mp.id
-        JOIN Edge_Has_N2 e2  ON mp.id    = e2.n1_id
-        JOIN N2_Processo p   ON e2.n2_id = p.id
-        JOIN Edge_Has_N3 e3  ON p.id     = e3.n2_id
-        JOIN N3_Tarefa t     ON e3.n3_id = t.id
-        WHERE LOWER(f.nome) LIKE LOWER(@busca)
+        FROM n0_frente f
+        JOIN edge_has_n1 e1  ON f.id     = e1.n0_id
+        JOIN n1_macroprocesso mp ON e1.n1_id = mp.id
+        JOIN edge_has_n2 e2  ON mp.id    = e2.n1_id
+        JOIN n2_processo p   ON e2.n2_id = p.id
+        JOIN edge_has_n3 e3  ON p.id     = e3.n2_id
+        JOIN n3_tarefa t     ON e3.n3_id = t.id
+        WHERE f.nome ILIKE %s
         GROUP BY f.id, f.nome
         ORDER BY f.nome
     """
-    return _run_query(
-        sql,
-        params={"busca": busca},
-        types={"busca": param_types.STRING},
-    )
+    return _run_query(sql, params=(busca,))
 
 
 def load_process_detail(n0_id: str) -> dict:
@@ -448,15 +447,12 @@ def load_process_detail(n0_id: str) -> dict:
     Carrega a hierarquia completa N1→N2→N3→N4→N5 para um N0 selecionado.
     Retorna dict estruturado para renderização.
     """
-    from google.cloud.spanner_v1 import param_types
-
-    p = {"n0_id": n0_id}
-    t = {"n0_id": param_types.STRING}
+    p = (n0_id,)
 
     # N0 nome
     n0_rows = _run_query(
-        "SELECT id, nome FROM N0_Frente WHERE id = @n0_id",
-        params=p, types=t,
+        "SELECT id, nome FROM n0_frente WHERE id = %s",
+        params=p,
     )
     frente_nome = n0_rows[0]["nome"] if n0_rows else n0_id
 
@@ -474,21 +470,21 @@ def load_process_detail(n0_id: str) -> dict:
             atr.sistemas_envolvidos,
             atr.kpis,
             atr.oportunidades_melhoria
-        FROM N0_Frente f
-        JOIN Edge_Has_N1 e1  ON f.id     = e1.n0_id
-        JOIN N1_MacroProcesso mp ON e1.n1_id = mp.id
-        JOIN Edge_Has_N2 e2  ON mp.id    = e2.n1_id
-        JOIN N2_Processo pr  ON e2.n2_id = pr.id
-        JOIN Edge_Has_N3 e3  ON pr.id    = e3.n2_id
-        JOIN N3_Tarefa ta    ON e3.n3_id = ta.id
-        JOIN Edge_Has_N4 e4  ON ta.id    = e4.n3_id
-        JOIN N4_Etapa et     ON e4.n4_id = et.id
-        LEFT JOIN Edge_Has_N5 e5   ON et.id    = e5.n4_id
-        LEFT JOIN N5_Atributos atr ON e5.n5_id = atr.id
-        WHERE f.id = @n0_id
+        FROM n0_frente f
+        JOIN edge_has_n1 e1  ON f.id     = e1.n0_id
+        JOIN n1_macroprocesso mp ON e1.n1_id = mp.id
+        JOIN edge_has_n2 e2  ON mp.id    = e2.n1_id
+        JOIN n2_processo pr  ON e2.n2_id = pr.id
+        JOIN edge_has_n3 e3  ON pr.id    = e3.n2_id
+        JOIN n3_tarefa ta    ON e3.n3_id = ta.id
+        JOIN edge_has_n4 e4  ON ta.id    = e4.n3_id
+        JOIN n4_etapa et     ON e4.n4_id = et.id
+        LEFT JOIN edge_has_n5 e5   ON et.id    = e5.n4_id
+        LEFT JOIN n5_atributos atr ON e5.n5_id = atr.id
+        WHERE f.id = %s
         ORDER BY mp.nome, pr.nome, ta.nome, et.nome
     """
-    rows = _run_query(sql, params=p, types=t)
+    rows = _run_query(sql, params=p)
 
     # Métricas
     total_etapas    = len({r["n4_id"] for r in rows})
@@ -539,13 +535,10 @@ def load_process_detail(n0_id: str) -> dict:
 
 
 def load_mermaid(n2_id: str) -> str | None:
-    """Carrega o script Mermaid associado ao N2_Processo selecionado."""
-    from google.cloud.spanner_v1 import param_types
-
+    """Carrega o script Mermaid associado ao n2_processo selecionado."""
     rows = _run_query(
-        "SELECT mermaid_script FROM N2_Mermaid WHERE n2_id = @n2_id",
-        params={"n2_id": n2_id},
-        types={"n2_id": param_types.STRING},
+        "SELECT mermaid_script FROM n2_mermaid WHERE n2_id = %s",
+        params=(n2_id,),
     )
     return rows[0]["mermaid_script"] if rows else None
 
@@ -951,7 +944,7 @@ def main() -> None:
         <div class="hero">
             <div class="hero-title">Mapa de Processos AS-IS</div>
             <div class="hero-subtitle">
-                Base de Conhecimento de Processos &nbsp;·&nbsp; Google Cloud Spanner
+                Base de Conhecimento de Processos &nbsp;·&nbsp; Cloud SQL for PostgreSQL
             </div>
         </div>
         """,

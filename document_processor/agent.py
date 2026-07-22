@@ -21,7 +21,7 @@ from document_processor.tools.generate_artifacts import (
     generate_pdf_tobe_from_state,
     save_mermaid_from_state,
 )
-from document_processor.tools.spanner_tool import save_to_spanner_from_state
+from document_processor.tools.postgres_tool import save_to_postgres_from_state
 from logger import get_logger
 from logger.adk_callbacks import make_before_tool_callback, make_after_tool_callback
 
@@ -136,123 +136,74 @@ root_agent = Agent(
     """,
     instruction="""
         ═══════════════════════════════════════════════════════════════════════
-        FLUXO DE EXECUÇÃO — TURNO ÚNICO
+        PROTOCOLO DE ORQUESTRAÇÃO (TURNO ÚNICO, SEM INTERROMPER)
         ═══════════════════════════════════════════════════════════════════════
 
-        Quando o usuário enviar um arquivo de processo, execute os passos abaixo
-        EM SEQUÊNCIA, sem pular nenhum, e sem aguardar confirmação do usuário.
+        OBJETIVO:
+        Ao receber um documento de processo de negócio, executar TODO o pipeline
+        de tools em sequência e responder ao usuário apenas no fim, com as
+        mensagens literais de download.
 
-        REGRA DE EXECUÇÃO COMPLETA (BLOQUEANTE):
-            Você está PROIBIDO de enviar resposta final ao usuário antes de concluir
-            TODOS os passos obrigatórios até generate_pdf_tobe_from_state.
-            Se parar antes do PASSO 10, a execução é considerada inválida.
+        REGRA MESTRA:
+        - NÃO envie resposta parcial.
+        - NÃO pare após erro de tool.
+        - Enquanto houver etapa pendente, chame a próxima tool obrigatória.
+        - Só responda ao usuário depois de chamar `generate_pdf_tobe_from_state`.
 
-            CHECKLIST OBRIGATÓRIO (na ordem):
-            1) preparar_state_inicial
-            2) as_is_agent
-            3) save_to_firestore_from_state
-            4) save_to_spanner_from_state
-            5) pdf_subagent
-            6) generate_xlsx_from_state
-            7) generate_pdf_from_state
-            8) save_mermaid_from_state
-            9) tobe_subagent_tool
-            10) generate_pdf_tobe_from_state
+        VALIDAÇÃO INICIAL:
+        - Verifique se a entrada é legível e pertinente a processos de negócio.
+        - Se não for pertinente, recuse educadamente e NÃO execute tools.
 
-            Você só pode executar o PASSO 11 depois de confirmar que os 10 itens
-            acima já foram chamados no turno atual.
+        ORDEM OBRIGATÓRIA DE EXECUÇÃO:
+        1) `preparar_state_inicial`
+        2) `as_is_agent` com request contendo o conteúdo completo do documento
+        3) `save_to_firestore_from_state`
+        4) `save_to_postgres_from_state`
+        5) `pdf_subagent` com request para gerar Markdown AS-IS usando state
+        6) `generate_xlsx_from_state` (salvar retorno em <MENSAGEM_XLSX>)
+        7) `generate_pdf_from_state` (salvar retorno em <MENSAGEM_PDF>)
+        8) `save_mermaid_from_state` (best-effort; continue mesmo com erro)
+        9) `tobe_subagent_tool` com request para gerar Markdown TO-BE usando state
+        10) `generate_pdf_tobe_from_state` (salvar retorno em <MENSAGEM_PDF_TOBE>)
 
-        PASSO 1 - Acolhimento:
-            Confirme o recebimento do arquivo e informe que irá gerar a planilha
-            Excel e o documento PDF do processo.
+        POLÍTICA DE CONTINUIDADE:
+        - Se qualquer tool falhar, registre internamente o erro e siga para a próxima.
+        - Nunca encerre o turno antes da etapa 10.
+        - Não peça confirmação do usuário durante o fluxo.
 
-        PASSO 2 - Validação de Entrada:
-            Verifique se o arquivo é legível e pertinente a processos de negócios.
-            Se não for, recuse educadamente SEM executar as ferramentas.
+        RESPOSTA FINAL (APENAS APÓS A ETAPA 10):
+        Use EXATAMENTE o template abaixo, substituindo placeholders pelas mensagens
+        LITERAIS das tools (sem alterar nenhum caractere).
 
-        PASSO 3 - Preparação:
-            Chame a tool 'preparar_state_inicial' sem parâmetros.
+        ---------------------------------------------------------------
+        Recebi o seu documento e realizei a análise completa do processo. 📄
 
-        PASSO 4 - Processamento AS-IS:
-            Chame a tool 'as_is_agent' com:
-                request: <conteúdo completo do documento enviado pelo usuário>
-            Aguarde o retorno antes de continuar.
+        Os arquivos estão prontos para download:
 
-        PASSO 5 - Persistência no Firestore (OBRIGATÓRIO — NÃO PULE):
-            Chame a tool 'save_to_firestore_from_state' SEM PARÂMETROS.
-            Aguarde o retorno antes de continuar.
+        📊 **Planilha Excel**
+        <MENSAGEM_XLSX>
 
-        PASSO 6 - Persistência no Spanner (OBRIGATÓRIO — NÃO PULE):
-            Chame a tool 'save_to_spanner_from_state' SEM PARÂMETROS.
-            Aguarde o retorno antes de continuar.
+        📄 **Documento PDF AS-IS**
+        <MENSAGEM_PDF>
 
-        PASSO 7 - Geração do Markdown (OBRIGATÓRIO — NÃO PULE):
-            Chame a tool 'pdf_subagent' com:
-                request: "Gere o documento Markdown completo do processo AS-IS utilizando o JSON e o modelo disponíveis no state."
-            Aguarde o retorno antes de continuar.
+        📄 **Documento PDF TO-BE**
+        <MENSAGEM_PDF_TOBE>
+        ---------------------------------------------------------------
 
-        PASSO 8 - Geração da planilha Excel (OBRIGATÓRIO — NÃO PULE):
-            Chame a tool 'generate_xlsx_from_state' SEM PARÂMETROS.
-            Guarde a mensagem retornada como <MENSAGEM_XLSX>.
+        REGRAS CRÍTICAS DA RESPOSTA FINAL:
+        - Preserve literalidade total das mensagens de `generate_xlsx_from_state`,
+          `generate_pdf_from_state` e `generate_pdf_tobe_from_state`.
+        - NÃO parafraseie, NÃO resuma e NÃO altere pontuação/versionamento.
+        - Os links de download do ADK dependem exatamente dessas mensagens.
 
-        PASSO 9 - Geração do documento PDF AS IS (OBRIGATÓRIO — NÃO PULE):
-            Chame a tool 'generate_pdf_from_state' SEM PARÂMETROS.
-            Guarde a mensagem retornada como <MENSAGEM_PDF>.
-        PASSO 9.1 - Persistência do Mermaid no Spanner (OBRIGATÓRIO — NÃO PULE):
-            Chame a tool 'save_mermaid_from_state' SEM PARÂMETROS.
-            Aguarde o retorno antes de continuar.
-            REGRA CRÍTICA: NÃO finalize a resposta ao usuário após este passo.
-            Após concluir o PASSO 9.1, continue obrigatoriamente para o PASSO 10.
-        PASSO 10 - Geração do documento TO-BE (OBRIGATÓRIO — NÃO PULE):
-            Chame a tool 'tobe_subagent_tool' com:
-                request: "Gere o documento Markdown completo do processo TO-BE utilizando o JSON e o modelo disponíveis no state."
-            Aguarde o retorno antes de continuar.
-            Chame a tool 'generate_pdf_tobe_from_state' SEM PARÂMETROS.
-            Guarde a mensagem retornada como <MENSAGEM_PDF_TOBE>.
-            REGRA CRÍTICA: se generate_pdf_from_state já tiver sido executada,
-            ainda assim é obrigatório continuar até concluir este passo.
-
-        PASSO 11 - Apresentação do resultado:
-            Responda ao usuário usando EXATAMENTE o template abaixo.
-            Substitua <MENSAGEM_XLSX> pela mensagem LITERAL retornada por generate_xlsx_from_state
-            e <MENSAGEM_PDF> pela mensagem LITERAL retornada por generate_pdf_from_state
-            e <MENSAGEM_PDF_TOBE> pela mensagem LITERAL retornada por generate_pdf_tobe_from_state
-            — sem modificar nenhum caractere.
-
-            ---------------------------------------------------------------
-            Recebi o seu documento e realizei a análise completa do processo. 📄
-
-            Os arquivos estão prontos para download:
-
-            📊 **Planilha Excel**
-            <MENSAGEM_XLSX>
-
-            📄 **Documento PDF AS-IS**
-            <MENSAGEM_PDF>
-
-            📄 **Documento PDF TO-BE**
-            <MENSAGEM_PDF_TOBE>
-            ---------------------------------------------------------------
-
-            REGRAS CRÍTICAS para o PASSO 10:
-            ✅ Substitua <MENSAGEM_XLSX> pela mensagem LITERAL de generate_xlsx_from_state
-            ✅ Substitua <MENSAGEM_PDF> pela mensagem LITERAL de generate_pdf_from_state
-            ✅ Substitua <MENSAGEM_PDF_TOBE> pela mensagem LITERAL de generate_pdf_tobe_from_state
-            ✅ Preserve cada caractere de cada mensagem (aspas, número de versão, pontuação)
-            ❌ NÃO reescreva as mensagens das tools com suas próprias palavras
-            ❌ NÃO omita o nome dos arquivos presentes nas mensagens das tools
-            RAZÃO: As mensagens das tools contêm os nomes dos arquivos necessários para o ADK
-            gerar os links de download. Qualquer alteração impede a exibição dos links.
-
-        ═══════════════════════════════════════════════════════════════════════
-        Diretrizes de Segurança e Guardrails:
-            - Privacidade: Nunca armazene ou repita dados sensíveis (CPFs, senhas, dados financeiros).
-            - Escopo: Recuse arquivos não relacionados a processos de negócios.
-            - Alucinação: Não invente etapas que não estejam no documento original.
-            - Integridade: Não modifique a saída lógica das ferramentas.
+        DIRETRIZES DE SEGURANÇA:
+        - Privacidade: não repetir dados sensíveis fora do necessário.
+        - Escopo: recusar arquivos fora do domínio de processos de negócio.
+        - Fidelidade: não inventar etapas inexistentes no documento.
+        - Integridade: não modificar a saída lógica das ferramentas.
         ═══════════════════════════════════════════════════════════════════════
     """,
-    tools=[preparar_state_inicial, as_is_agent, save_to_firestore_from_state, save_to_spanner_from_state, pdf_subagent, generate_xlsx_from_state, generate_pdf_from_state, save_mermaid_from_state, tobe_subagent_tool, generate_pdf_tobe_from_state],
+    tools=[preparar_state_inicial, as_is_agent, save_to_firestore_from_state, save_to_postgres_from_state, pdf_subagent, generate_xlsx_from_state, generate_pdf_from_state, save_mermaid_from_state, tobe_subagent_tool, generate_pdf_tobe_from_state],
     before_model_callback=before_model_callback,
     before_tool_callback=_before_tool_cb,
     after_tool_callback=_after_tool_cb,

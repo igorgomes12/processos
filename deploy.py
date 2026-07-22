@@ -52,6 +52,10 @@ if not GOOGLE_API_KEY:
     print("   O Reasoning Engine usará ADC (Vertex AI mode) sem API key.")
 
 MODEL = os.getenv("MODEL", "gemini-2.5-flash")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
+if not POSTGRES_PASSWORD:
+    print("⚠️  POSTGRES_PASSWORD não encontrada no .env — save_to_postgres_from_state falhará em produção.")
 
 # ── Carrega credenciais ADC explicitamente e define quota project ─────────────
 creds, _ = google.auth.default()
@@ -99,7 +103,7 @@ remote_agent = agent_engines.create(
         "cloudpickle==3.1.2",       # necessário para serialização do agente
         "pydantic==2.12.5",         # necessário pelo google-adk/vertexai
         "google-cloud-firestore",
-        "google-cloud-spanner",         # persistência no Spanner (save_to_spanner_from_state)
+        "cloud-sql-python-connector[pg8000]",  # persistência no Postgres (save_to_postgres_from_state)
         "google-cloud-logging",
         "google-cloud-storage>=3.0.0",  # evita FutureWarning do google-cloud-aiplatform
         "pandas",
@@ -133,10 +137,8 @@ remote_agent = agent_engines.create(
         # sem conflito com GOOGLE_API_KEY, resolvendo o AttributeError _http_options.
         "GOOGLE_GENAI_USE_VERTEXAI": "1",
         "MODEL": MODEL,
-        # Desabilita o exporter de métricas internas do Spanner SDK (OpenTelemetry →
-        # Cloud Monitoring). Sem este flag, o SDK bloqueia indefinidamente quando a
-        # service account não tem roles/monitoring.metricWriter.
-        "SPANNER_ENABLE_BUILTIN_METRICS": "false",
+        "POSTGRES_USER": POSTGRES_USER,
+        "POSTGRES_PASSWORD": POSTGRES_PASSWORD,
     },
 )
 
@@ -184,35 +186,34 @@ print("Sem essa permissão o registro no Firestore falhará silenciosamente")
 print("(o erro será visível nos logs do Cloud Logging / stderr do agente).")
 print("=" * 70)
 
-# ── Verificação de permissão IAM do Spanner ───────────────────────────────────
+# ── Verificação de permissão IAM do Cloud SQL ─────────────────────────────────
 print()
 print("=" * 70)
-print("⚠️  ATENÇÃO: PERMISSÃO SPANNER NECESSÁRIA")
+print("⚠️  ATENÇÃO: PERMISSÃO CLOUD SQL NECESSÁRIA")
 print("=" * 70)
 print()
-print("A mesma service account do Reasoning Engine precisa de acesso ao Spanner.")
+print("A mesma service account do Reasoning Engine precisa de acesso ao Cloud SQL")
+print("(Cloud SQL Python Connector usa roles/cloudsql.client, escopo de projeto).")
 print()
 try:
-    sa_spanner = f"service-{project_number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
-    print(f"   {sa_spanner}")
+    sa_cloudsql = f"service-{project_number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
+    print(f"   {sa_cloudsql}")
     print()
-    print("Execute o seguinte comando para conceder acesso ao Spanner:")
+    print("Execute o seguinte comando para conceder acesso ao Cloud SQL:")
     print()
-    print(f'   gcloud spanner instances add-iam-policy-binding id-agente-processo \\')
-    print(f'       --project={PROJECT_ID} \\')
-    print(f'       --member="serviceAccount:{sa_spanner}" \\')
-    print(f'       --role="roles/spanner.databaseUser"')
+    print(f'   gcloud projects add-iam-policy-binding {PROJECT_ID} \\')
+    print(f'       --member="serviceAccount:{sa_cloudsql}" \\')
+    print(f'       --role="roles/cloudsql.client"')
 except NameError:
     print("   service-{PROJECT_NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com")
     print()
-    print("Execute para obter o PROJECT_NUMBER e conceder acesso ao Spanner:")
+    print("Execute para obter o PROJECT_NUMBER e conceder acesso ao Cloud SQL:")
     print()
     print(f"   PROJECT_NUMBER=$(gcloud projects describe {PROJECT_ID} --format='value(projectNumber)')")
-    print(f'   gcloud spanner instances add-iam-policy-binding id-agente-processo \\')
-    print(f'       --project={PROJECT_ID} \\')
+    print(f'   gcloud projects add-iam-policy-binding {PROJECT_ID} \\')
     print(f'       --member="serviceAccount:service-${{PROJECT_NUMBER}}@gcp-sa-aiplatform-re.iam.gserviceaccount.com" \\')
-    print(f'       --role="roles/spanner.databaseUser"')
+    print(f'       --role="roles/cloudsql.client"')
 print()
-print("Sem essa permissão o registro no Spanner falhará com PERMISSION_DENIED.")
+print("Sem essa permissão o registro no Postgres falhará com PERMISSION_DENIED.")
 print("(o erro será visível nos logs do Cloud Logging / stderr do agente).")
 print("=" * 70)

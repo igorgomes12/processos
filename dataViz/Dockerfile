@@ -11,8 +11,6 @@ FROM python:3.11-slim
 
 # Evita prompts interativos durante a instalação de pacotes do sistema
 ENV DEBIAN_FRONTEND=noninteractive
-# Desabilita métricas internas do Spanner (evita travamento sem roles de monitoring)
-ENV SPANNER_ENABLE_BUILTIN_METRICS=false
 # Força stdout/stderr sem buffer (logs visíveis em tempo real no Cloud Logging)
 ENV PYTHONUNBUFFERED=1
 

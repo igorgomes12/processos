@@ -25,12 +25,12 @@ from google.adk.tools.tool_context import ToolContext
 
 from agent_tools.json_to_xlsx import json_to_xlsx
 from agente_gerador_pdf_md.tools.markdown_to_pdf_tool import _build_pdf
-from document_processor.tools.spanner_tool import _upsert_mermaid_sync, _SPANNER_TIMEOUT
+from document_processor.tools.postgres_tool import _upsert_mermaid_sync
 
 # ─── Configurações Firestore ─────────────────────────────────────────────────
 _CREDENTIALS_PATH = Path(__file__).resolve().parents[2] / "credentials.json"
 
-# Namespace UUID fixo para geração determinística de IDs (mesmo padrão do Spanner).
+# Namespace UUID fixo para geração determinística de IDs (mesmo padrão do Postgres).
 # Garante idempotência: reprocessar o mesmo documento sobrescreve os dados sem duplicar.
 _UUID_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 _GCP_PROJECT = "steady-computer-487217-p6"
@@ -336,7 +336,7 @@ def _extract_mermaid_block(markdown: str) -> str | None:
 async def save_mermaid_from_state(tool_context: ToolContext) -> Dict[str, Any]:
     """
     Extrai o script Mermaid do state (pdf_markdown), identifica os N2s distintos
-    do state (pdf_input_json) e persiste no Spanner via upsert idempotente.
+    do state (pdf_input_json) e persiste no Postgres via upsert idempotente.
 
     Cardinalidade: 1 script Mermaid por N2_Processo (PK garante unicidade).
     Tabelas afetadas: N2_Mermaid + Edge_Has_Mermaid.
@@ -351,31 +351,31 @@ async def save_mermaid_from_state(tool_context: ToolContext) -> Dict[str, Any]:
     markdown = tool_context.state.get("pdf_markdown", "")
     if not markdown or not markdown.strip():
         msg = "State 'pdf_markdown' está vazio. O pdf_subagent não gerou o Markdown."
-        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        print(f"[Postgres][Mermaid][ERROR] {msg}", file=sys.stderr)
         return {"status": "error", "message": msg}
 
     mermaid_script = _extract_mermaid_block(markdown)
     if not mermaid_script:
         msg = "Nenhum bloco ```mermaid encontrado no pdf_markdown."
-        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        print(f"[Postgres][Mermaid][ERROR] {msg}", file=sys.stderr)
         return {"status": "error", "message": msg}
 
     # 2. Extrai triplas (N0, N1, N2) distintas do JSON gerado pelo as_is_agent
     #    O n2_id é UUID v5 de (n0_nome|n1_nome|n2_nome) — mesmo algoritmo de
-    #    _persistir_no_spanner — garantindo que a FK N2_Mermaid → N2_Processo
+    #    _persistir_no_postgres — garantindo que a FK n2_mermaid → n2_processo
     #    seja satisfeita.
     raw_json = tool_context.state.get("pdf_input_json", "")
     json_str = _extract_json_from_text(raw_json)
     if not json_str:
         msg = "State 'pdf_input_json' inválido — não foi possível extrair N2s."
-        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        print(f"[Postgres][Mermaid][ERROR] {msg}", file=sys.stderr)
         return {"status": "error", "message": msg}
 
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError as e:
         msg = f"JSON inválido ao extrair N2s: {e}"
-        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        print(f"[Postgres][Mermaid][ERROR] {msg}", file=sys.stderr)
         return {"status": "error", "message": msg}
 
     n2_paths = sorted({
@@ -390,10 +390,10 @@ async def save_mermaid_from_state(tool_context: ToolContext) -> Dict[str, Any]:
 
     if not n2_paths:
         msg = "Nenhum N2 encontrado no JSON para persistir o Mermaid."
-        print(f"[Spanner][Mermaid][ERROR] {msg}", file=sys.stderr)
+        print(f"[Postgres][Mermaid][ERROR] {msg}", file=sys.stderr)
         return {"status": "error", "message": msg}
 
-    # 3. Persiste no Spanner (síncrono via thread para não bloquear o event loop)
+    # 3. Persiste no Postgres (síncrono via thread para não bloquear o event loop)
     try:
         mensagem = await asyncio.wait_for(
             asyncio.to_thread(_upsert_mermaid_sync, n2_paths, mermaid_script),
@@ -403,15 +403,15 @@ async def save_mermaid_from_state(tool_context: ToolContext) -> Dict[str, Any]:
 
     except asyncio.TimeoutError:
         msg = (
-            f"Timeout ao persistir Mermaid no Spanner após {_MERMAID_TIMEOUT}s. "
+            f"Timeout ao persistir Mermaid no Postgres após {_MERMAID_TIMEOUT}s. "
             "Verifique a conectividade e a permissão da service account."
         )
-        print(f"[Spanner][ERROR] {msg}", file=sys.stderr)
+        print(f"[Postgres][ERROR] {msg}", file=sys.stderr)
         return {"status": "error", "message": msg}
 
     except Exception as e:
-        msg = f"Erro ao persistir Mermaid no Spanner: {e}"
-        print(f"[Spanner][ERROR] {msg}", file=sys.stderr)
+        msg = f"Erro ao persistir Mermaid no Postgres: {e}"
+        print(f"[Postgres][ERROR] {msg}", file=sys.stderr)
         return {"status": "error", "message": msg}
 
 
@@ -468,7 +468,7 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
         artifact=artifact_part,
     )
 
-    # ── Persistência do Mermaid no Spanner (side-effect garantido) ───────────
+    # ── Persistência do Mermaid no Postgres (side-effect garantido) ───────────
     # Executado aqui para garantir persistência independentemente do LLM
     # chamar save_mermaid_from_state como passo separado.
     mermaid_status = "não realizada"
@@ -476,13 +476,13 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
         mermaid_script = _extract_mermaid_block(markdown_content)
         if not mermaid_script:
             mermaid_status = "bloco ```mermaid não encontrado no Markdown"
-            print(f"[Spanner][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
+            print(f"[Postgres][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
         else:
             raw_json = tool_context.state.get("pdf_input_json", "")
             json_str = _extract_json_from_text(raw_json)
             if not json_str:
                 mermaid_status = "pdf_input_json ausente ou inválido"
-                print(f"[Spanner][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
+                print(f"[Postgres][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
             else:
                 data = json.loads(json_str)
                 n2_paths = sorted({
@@ -496,7 +496,7 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
                 })
                 if not n2_paths:
                     mermaid_status = "nenhum N2 encontrado no JSON"
-                    print(f"[Spanner][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
+                    print(f"[Postgres][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
                 else:
                     mermaid_status = await asyncio.wait_for(
                         asyncio.to_thread(_upsert_mermaid_sync, n2_paths, mermaid_script),
@@ -504,10 +504,10 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
                     )
     except asyncio.TimeoutError:
         mermaid_status = f"timeout após {_MERMAID_TIMEOUT}s"
-        print(f"[Spanner][Mermaid][ERROR] {mermaid_status}", file=sys.stderr)
+        print(f"[Postgres][Mermaid][ERROR] {mermaid_status}", file=sys.stderr)
     except Exception as _e:
         mermaid_status = f"erro: {_e}"
-        print(f"[Spanner][Mermaid][ERROR] {mermaid_status}", file=sys.stderr)
+        print(f"[Postgres][Mermaid][ERROR] {mermaid_status}", file=sys.stderr)
 
     return {
         "status": "success",

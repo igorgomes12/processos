@@ -6,7 +6,7 @@ reportlab
 pandas
 openpyxl
 google-cloud-firestore
-google-cloud-spanner
+cloud-sql-python-connector[pg8000]
 google-cloud-logging
 streamlit
 python-docx

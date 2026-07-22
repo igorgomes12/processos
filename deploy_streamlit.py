@@ -6,7 +6,7 @@ Uso:
 
 O que este script faz:
     1. Cria a service account `streamlit-processos` (se não existir) e concede
-       roles/spanner.databaseReader na instância do Spanner.
+       roles/cloudsql.client no projeto (Cloud SQL Python Connector).
     2. Faz o build da imagem Docker usando Google Cloud Build
        (contexto = raiz do projeto, Dockerfile = dataViz/Dockerfile).
     3. Faz push para Container Registry (gcr.io).
@@ -16,13 +16,18 @@ O que este script faz:
 Pré-requisitos:
     - gcloud auth login / gcloud auth application-default login
     - gcloud config set project steady-computer-487217-p6
-    - Cloud Build, Cloud Run, Container Registry e Spanner APIs habilitadas
+    - Cloud Build, Cloud Run, Container Registry e Cloud SQL Admin APIs habilitadas
     - Permissão de owner ou roles necessárias para criar SA e fazer deploy
+    - POSTGRES_PASSWORD definida no .env (repassada ao Cloud Run)
 """
 
 import os
 import subprocess
 import sys
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Força UTF-8 para evitar UnicodeEncodeError no Windows (cp1252)
 if hasattr(sys.stdout, "reconfigure"):
@@ -38,7 +43,10 @@ IMAGE             = f"gcr.io/{PROJECT_ID}/{SERVICE_NAME}:latest"
 DOCKERFILE        = "dataViz/Dockerfile"
 SA_NAME           = "streamlit-processos"
 SA_EMAIL          = f"{SA_NAME}@{PROJECT_ID}.iam.gserviceaccount.com"
-SPANNER_INSTANCE  = "id-agente-processo"
+POSTGRES_USER     = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
+if not POSTGRES_PASSWORD:
+    print("⚠️  POSTGRES_PASSWORD não encontrada no .env — o app não conseguirá ler do Postgres em produção.")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -84,15 +92,14 @@ else:
         "--project", PROJECT_ID,
     ])
 
-# Garante roles/spanner.databaseReader na instância
-print(f"   🔑  Concedendo roles/spanner.databaseReader em {SPANNER_INSTANCE}...")
+# Garante roles/cloudsql.client no projeto (Cloud SQL Python Connector)
+print(f"   🔑  Concedendo roles/cloudsql.client em {PROJECT_ID}...")
 run([
-    "gcloud", "spanner", "instances", "add-iam-policy-binding", SPANNER_INSTANCE,
-    "--project", PROJECT_ID,
+    "gcloud", "projects", "add-iam-policy-binding", PROJECT_ID,
     "--member", f"serviceAccount:{SA_EMAIL}",
-    "--role", "roles/spanner.databaseReader",
+    "--role", "roles/cloudsql.client",
 ])
-print("   ✅  Permissão Spanner concedida.")
+print("   ✅  Permissão Cloud SQL concedida.")
 
 # ── 2. Cloud Build ────────────────────────────────────────────────────────────
 print()
@@ -133,9 +140,9 @@ run([
     "--memory", "512Mi",
     "--min-instances", "0",       # escala a zero quando ocioso (reduz custo)
     "--max-instances", "3",
-    "--timeout", "300",           # 5 min (queries Spanner + render PDF/Mermaid)
+    "--timeout", "300",           # 5 min (queries Postgres + render PDF/Mermaid)
     "--concurrency", "10",
-    "--set-env-vars", "SPANNER_ENABLE_BUILTIN_METRICS=false",
+    "--set-env-vars", f"POSTGRES_USER={POSTGRES_USER},POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
     "--project", PROJECT_ID,
 ])
 

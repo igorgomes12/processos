@@ -6,7 +6,7 @@
 
 ## Visão Geral da Arquitetura
 
-O sistema é composto por **3 agentes** organizados em hierarquia orquestradora/sub-agente, construídos sobre o **Google ADK (Agent Development Kit)**. O agente raiz (`document_processor`) coordena dois sub-agentes especializados e **quatro tools determinísticas**, expondo um fluxo end-to-end que transforma documentos de processos de negócio em planilhas Excel, documentos PDF e scripts Mermaid persistidos no Spanner.
+O sistema é composto por **3 agentes** organizados em hierarquia orquestradora/sub-agente, construídos sobre o **Google ADK (Agent Development Kit)**. O agente raiz (`document_processor`) coordena dois sub-agentes especializados e **quatro tools determinísticas**, expondo um fluxo end-to-end que transforma documentos de processos de negócio em planilhas Excel, documentos PDF e scripts Mermaid persistidos no Postgres.
 
 ```
 document_processor  (agente raiz / orquestrador)
@@ -16,7 +16,7 @@ document_processor  (agente raiz / orquestrador)
 ├── generate_xlsx_from_state        (tool determinística: JSON → Excel)
 ├── agente_gerador_pdf_md           (sub-agente via AgentTool: JSON → Markdown)
 ├── generate_pdf_from_state         (tool determinística: Markdown → PDF)
-└── save_mermaid_from_state         (tool determinística: Mermaid → Spanner N0_Mermaid)
+└── save_mermaid_from_state         (tool determinística: Mermaid → Postgres n2_mermaid)
 ```
 
 **Modelos LLM utilizados:**
@@ -49,7 +49,7 @@ Atua como ponto de entrada do sistema e especialista sênior em BPM. Recebe arqu
 | 4 | `generate_xlsx_from_state` | Tool determinística | `document_processor/tools/generate_artifacts.py` | Lê `state["pdf_input_json"]`, extrai o JSON, gera o arquivo `processos.xlsx` (via `json_to_xlsx`) e salva como artefato ADK. Não depende de LLM. |
 | 5 | `pdf_subagent` | `AgentTool` | Encapsula `agente_gerador_pdf_md/agent.py` | Lê o JSON e o template do state e gera documento Markdown completo. O Markdown é salvo em `state["pdf_markdown"]` via `output_key`. |
 | 6 | `generate_pdf_from_state` | Tool determinística | `document_processor/tools/generate_artifacts.py` | Lê `state["pdf_markdown"]`, converte para PDF via ReportLab (`_build_pdf`) e salva como artefato ADK. Não depende de LLM. |
-| 7 | `save_mermaid_from_state` | Tool determinística | `document_processor/tools/generate_artifacts.py` | Extrai o bloco Mermaid de `state["pdf_markdown"]`, identifica os N0s distintos de `state["pdf_input_json"]` e persiste no Spanner (tabelas `N0_Mermaid` + `Edge_Has_Mermaid`) via upsert idempotente. Não depende de LLM. |
+| 7 | `save_mermaid_from_state` | Tool determinística | `document_processor/tools/generate_artifacts.py` | Extrai o bloco Mermaid de `state["pdf_markdown"]`, identifica os N2s distintos de `state["pdf_input_json"]` e persiste no Postgres (tabelas `n2_mermaid` + `edge_has_mermaid`) via upsert idempotente. Não depende de LLM. |
 
 ### Fluxo de Execução Obrigatório (7 passos)
 
@@ -61,7 +61,7 @@ Atua como ponto de entrada do sistema e especialista sênior em BPM. Recebe arqu
 5. Chamar generate_xlsx_from_state            → gera processos.xlsx a partir do JSON no state
 6. Chamar pdf_subagent (sem args)             → gera Markdown do documento de processo
 7. Chamar generate_pdf_from_state             → gera documento_processo.pdf a partir do Markdown no state
-8. Chamar save_mermaid_from_state             → extrai bloco Mermaid do Markdown e persiste no Spanner para cada N0
+8. Chamar save_mermaid_from_state             → extrai bloco Mermaid do Markdown e persiste no Postgres para cada N2
 9. Retransmitir mensagens LITERAIS das tools generate_xlsx e generate_pdf ao usuário
 ```
 
@@ -248,12 +248,12 @@ Estas tools são chamadas diretamente pelo `document_processor` **após** os sub
 | Aspecto | Detalhe |
 |---------|--------|
 | **Entrada** | `state["pdf_markdown"]` + `state["pdf_input_json"]` |
-| **Saída** | Upsert no Spanner: `N0_Mermaid` + `Edge_Has_Mermaid` |
-| **Processamento** | Extrai o primeiro bloco ` ```mermaid...``` ` do Markdown via regex. Extrai N0s distintos do JSON. Para cada N0 calcula `n0_id = _make_id(n0_nome)` (UUID v5 determinístico) e persiste em lote único via `_upsert_mermaid_sync()` em `asyncio.to_thread()`. |
+| **Saída** | Upsert no Postgres: `n2_mermaid` + `edge_has_mermaid` |
+| **Processamento** | Extrai o primeiro bloco ` ```mermaid...``` ` do Markdown via regex. Extrai N2s distintos do JSON. Para cada N2 calcula `n2_id = _make_id(n0_nome, n1_nome, n2_nome)` (UUID v5 determinístico) e persiste em transação única via `_upsert_mermaid_sync()` em `asyncio.to_thread()`. |
 | **Timeout** | 60 segundos |
-| **Idempotência** | `insert_or_update` — reprocessar o mesmo documento sobrescreve sem duplicar |
-| **Cardinalidade** | 1 script Mermaid por N0 (mesmo script gerado para o documento é associado a todos os N0s distintos presentes no JSON) |
-| **Dependências** | `google-cloud-spanner` |
+| **Idempotência** | `INSERT ... ON CONFLICT DO UPDATE` — reprocessar o mesmo documento sobrescreve sem duplicar |
+| **Cardinalidade** | 1 script Mermaid por N2 (mesmo script gerado para o documento é associado a todos os N2s distintos presentes no JSON) |
+| **Dependências** | `cloud-sql-python-connector[pg8000]` |
 
 ### Função utilitária `_extract_json_from_text`
 
@@ -299,9 +299,9 @@ document_processor (orquestrador)
   │
   └── 7. save_mermaid_from_state()                ← tool determinística
           ├── Lê state["pdf_markdown"] → extrai bloco ```mermaid...```
-          ├── Lê state["pdf_input_json"] → extrai N0s distintos
-          ├── _upsert_mermaid_sync(n0_nomes, mermaid_script) via asyncio.to_thread()
-          └─→ Spanner: N0_Mermaid (1 row/N0) + Edge_Has_Mermaid
+          ├── Lê state["pdf_input_json"] → extrai N2s distintos
+          ├── _upsert_mermaid_sync(n2_paths, mermaid_script) via asyncio.to_thread()
+          └─→ Postgres: n2_mermaid (1 row/N2) + edge_has_mermaid
 ```
 
 ---
@@ -317,22 +317,22 @@ document_processor (orquestrador)
 
 ---
 
-## Persistência de Dados (Spanner — Mermaid)
+## Persistência de Dados (Postgres — Mermaid)
 
-A tool `save_mermaid_from_state` persiste o script Mermaid gerado pelo `agente_gerador_pdf_md` no **Google Cloud Spanner**.
+A tool `save_mermaid_from_state` persiste o script Mermaid gerado pelo `agente_gerador_pdf_md` no **Cloud SQL for PostgreSQL**.
 
 | Configuração | Valor |
 |-------------|-------|
 | Projeto GCP | `steady-computer-487217-p6` |
-| Instância | `id-agente-processo` |
+| Instância | `agente-processos-db` (`steady-computer-487217-p6:us-east1:agente-processos-db`) |
 | Database | `db-agente-processo` |
-| Tabela principal | `N0_Mermaid` (PK: `n0_id`, campos: `mermaid_script`, `gerado_em`) |
-| Tabela de aresta | `Edge_Has_Mermaid` (PK: `n0_id, mermaid_id`) |
-| Credenciais | `credentials.json` local ou ADC no Vertex AI |
-| Idempotência | `insert_or_update` via UUID v5 determinístico por `n0_nome` |
+| Tabela principal | `n2_mermaid` (PK: `n2_id`, campos: `mermaid_script`, `gerado_em`) |
+| Tabela de aresta | `edge_has_mermaid` (PK: `n2_id, mermaid_id`) |
+| Credenciais | `credentials.json` local ou ADC no Vertex AI (Cloud SQL Python Connector) |
+| Idempotência | `INSERT ... ON CONFLICT DO UPDATE` via UUID v5 determinístico por `(n0_nome, n1_nome, n2_nome)` |
 | Concorrência | Escrita em `asyncio.to_thread()` para não bloquear o event loop |
 | Timeout | 60 segundos |
-| Função síncrona | `_upsert_mermaid_sync()` em `document_processor/tools/spanner_tool.py` |
+| Função síncrona | `_upsert_mermaid_sync()` em `document_processor/tools/postgres_tool.py` |
 
 ---
 
