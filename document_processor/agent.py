@@ -2,6 +2,16 @@ import asyncio
 import io
 import logging
 import os
+import sys
+
+# Força UTF-8 no stdout/stderr para evitar UnicodeEncodeError com emoji nos
+# prints de debug (ex: markdown_to_pdf_tool.py) quando o console usa cp1252
+# (padrão no Windows). Precisa rodar antes de qualquer tool imprimir.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv

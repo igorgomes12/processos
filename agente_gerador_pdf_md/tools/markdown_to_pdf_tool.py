@@ -765,6 +765,18 @@ def _build_pdf_from_html(markdown_content: str) -> bytes:
     return pdf_bytes
 
 
+def _sanitize_for_reportlab(text: str) -> str:
+    """Remove caracteres fora do WinAnsiEncoding (cp1252).
+
+    As fontes padrão do ReportLab (Helvetica etc., via getSampleStyleSheet())
+    usam WinAnsiEncoding e não suportam emoji/Unicode fora do Latin-1
+    estendido — texto com esses caracteres quebra doc.build() com
+    UnicodeEncodeError ('charmap' codec). Acentuação PT-BR é preservada
+    (está toda dentro do cp1252); apenas emoji e símbolos exóticos são removidos.
+    """
+    return text.encode("cp1252", errors="ignore").decode("cp1252")
+
+
 def _build_pdf(markdown_content: str) -> bytes:
     """
     Executa o processamento síncrono e CPU-intensivo do ReportLab.
@@ -796,7 +808,7 @@ def _build_pdf(markdown_content: str) -> bytes:
             topMargin=72,
             bottomMargin=18,
         )
-        story = parse_markdown_to_reportlab(markdown_content)
+        story = parse_markdown_to_reportlab(_sanitize_for_reportlab(markdown_content))
         doc.build(story)
         pdf_bytes = pdf_buffer.getvalue()
         pdf_buffer.close()
