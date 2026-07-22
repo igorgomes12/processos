@@ -83,10 +83,20 @@ def _clean_mermaid_code(mermaid_code: str) -> str:
     2. Adiciona quebra APÓS cada comando completo (após ] ou })
     """
     original = mermaid_code.strip()
-    
+
     _debug_log(f"Código Mermaid original ({len(original)} chars):")
     _debug_log(f"Primeiras 200 chars: {original[:200]}")
-    
+
+    # Se o código já veio multi-linha (uma instrução por linha, formato esperado
+    # do prompt do agente), NÃO rodar o colapsa-e-reconstrói agressivo abaixo:
+    # a reconstrução via regex só reconhece início de nó com [A-Z], o que destrói
+    # IDs em minúsculas (ex.: "inicio", "coleta") gerados pelo nosso prompt.
+    original_lines = [ln.strip() for ln in original.split('\n') if ln.strip()]
+    if len(original_lines) > 1:
+        cleaned = '\n'.join(original_lines)
+        _debug_log(f"Código já multi-linha ({len(original_lines)} linhas) — mantido sem reconstrução destrutiva.")
+        return cleaned
+
     # Passo 1: Remove TODAS as quebras de linha e múltiplos espaços
     single_line = ' '.join(original.split())
     
