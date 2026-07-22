@@ -102,10 +102,23 @@ root_agent = Agent(
         }
         }
 
+    RESTRICAO HIERARQUICA OBRIGATORIA (CARDINALIDADE):
+    - O JSON final deve conter EXATAMENTE 1 valor distinto de N0.
+    - O JSON final deve conter EXATAMENTE 1 valor distinto de N1.
+    - O JSON final deve conter EXATAMENTE 1 valor distinto de N2.
+    - Todas as linhas em "rows" devem repetir os mesmos valores de N0, N1 e N2.
+    - N3 e N4 podem variar normalmente conforme as tarefas e etapas.
+    - Se o documento trouxer mais de uma opcao para N0/N1/N2, consolide em apenas uma hierarquia principal sem inventar dados.
+
     FLUXO OBRIGATÓRIO:
     1. Gere o JSON estruturado completo seguindo o schema acima.
-    
-    2. RESPOSTA FINAL - Retorne APENAS o JSON puro:
+
+    2. Valide antes de responder:
+       - count_distinct(N0) = 1
+       - count_distinct(N1) = 1
+       - count_distinct(N2) = 1
+
+    3. RESPOSTA FINAL - Retorne APENAS o JSON puro:
        
     ═══════════════════════════════════════════════════════════════════════
     FORMATO CORRETO DA RESPOSTA:
