@@ -314,6 +314,27 @@ async def generate_xlsx_from_state(tool_context: ToolContext) -> Dict[str, Any]:
 _MERMAID_TIMEOUT = 60
 
 
+_MERMAID_BRACKET_LABEL = re.compile(r'\[([^\[\]"]*[()][^\[\]"]*)\]')
+_MERMAID_BRACE_LABEL = re.compile(r'\{([^{}"]*[()][^{}"]*)\}')
+
+
+def _quote_mermaid_labels(mermaid_code: str) -> str:
+    """Envolve em aspas labels de nós ([...] e {...}) que contêm parênteses.
+
+    O parser do Mermaid trata '(' e ')' como início de outro formato de nó
+    (nó arredondado/stadium); um label como A[Geração AS-IS (LLM)] sem aspas
+    quebra com "Parse error... got 'PS'". Envolver em aspas
+    (A["Geração AS-IS (LLM)"]) resolve sem alterar o texto do label.
+    Labels que já estão entre aspas são deixados intactos (o char class
+    exclui '"', então já não fazem match).
+    """
+    if not mermaid_code:
+        return mermaid_code
+    code = _MERMAID_BRACKET_LABEL.sub(lambda m: f'["{m.group(1)}"]', mermaid_code)
+    code = _MERMAID_BRACE_LABEL.sub(lambda m: f'{{"{m.group(1)}"}}', code)
+    return code
+
+
 def _extract_mermaid_block(markdown: str) -> str | None:
     """Extrai o conteúdo do primeiro bloco ```mermaid...``` presente no Markdown.
 
@@ -325,11 +346,13 @@ def _extract_mermaid_block(markdown: str) -> str | None:
     - Abre com [^\n]* (em vez de \s*) para não consumir a quebra de linha
       obrigatória após o token "mermaid".
     - Fecha com \n\s*``` para tolerar espaços antes da fence de fechamento.
+    - Aplica _quote_mermaid_labels para evitar erro de parse com parênteses
+      não citados em labels (ver docstring da função).
     """
     normalised = markdown.replace('\r\n', '\n').replace('\r', '\n')
     match = re.search(r'```mermaid[^\n]*\n(.*?)\n\s*```', normalised, re.DOTALL)
     if match:
-        return match.group(1).strip()
+        return _quote_mermaid_labels(match.group(1).strip())
     return None
 
 

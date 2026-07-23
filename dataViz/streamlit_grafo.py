@@ -12,16 +12,22 @@ from __future__ import annotations
 
 import html
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
+from dotenv import load_dotenv
 
 # ─── Caminhos / configurações ────────────────────────────────────────────────
 _ROOT             = Path(__file__).resolve().parent
 _PROJECT_ROOT     = _ROOT.parent          # raiz do projeto (um nível acima de dataViz/)
 _CREDENTIALS_PATH = _PROJECT_ROOT / "credentials.json"
+
+# Carrega .env local (dev). Em produção (Cloud Run) as vars vêm de --set-env-vars,
+# então load_dotenv() é um no-op silencioso se o arquivo não existir.
+load_dotenv(dotenv_path=_PROJECT_ROOT / ".env")
 
 _GCP_PROJECT              = "steady-computer-487217-p6"
 _INSTANCE_CONNECTION_NAME = "steady-computer-487217-p6:us-east1:agente-processos-db"
@@ -528,6 +534,66 @@ def load_mermaid(n2_id: str) -> str | None:
     return rows[0]["mermaid_script"] if rows else None
 
 
+_MERMAID_BRACKET_LABEL = re.compile(r'\[([^\[\]"]*[()][^\[\]"]*)\]')
+_MERMAID_BRACE_LABEL = re.compile(r'\{([^{}"]*[()][^{}"]*)\}')
+
+
+def _quote_mermaid_labels(mermaid_code: str) -> str:
+    """Envolve em aspas labels de nós ([...] e {...}) que contêm parênteses.
+
+    O parser do mermaid.js trata '(' e ')' dentro de um label sem aspas como
+    início de outro formato de nó (ex: "Geração AS-IS (LLM)" quebra com
+    "Parse error... got 'PS'"). Corrige diagramas já persistidos no Postgres
+    antes de gerar essa correção (a extração em generate_artifacts.py já
+    aplica o mesmo tratamento para diagramas novos).
+    """
+    if not mermaid_code:
+        return mermaid_code
+    code = _MERMAID_BRACKET_LABEL.sub(lambda m: f'["{m.group(1)}"]', mermaid_code)
+    code = _MERMAID_BRACE_LABEL.sub(lambda m: f'{{"{m.group(1)}"}}', code)
+    return code
+
+
+_MERMAID_INIT_DIRECTIVE = (
+    "%%{init: {"
+    "'theme': 'base',"
+    "'themeVariables': {"
+    "'primaryColor': '#7fb8ec',"
+    "'primaryTextColor': '#0a1a2e',"
+    "'primaryBorderColor': '#2f6fb0',"
+    "'lineColor': '#7fb8ec',"
+    "'secondaryColor': '#a9d0f0',"
+    "'tertiaryColor': '#0f1b30',"
+    "'fontSize': '15px'"
+    "},"
+    "'themeCSS': "
+    "'.edgePath .path, .flowchart-link "
+    "{ stroke: #7fb8ec !important; stroke-width: 2.2px !important; } "
+    ".arrowheadPath, marker path "
+    "{ fill: #7fb8ec !important; stroke: #7fb8ec !important; } "
+    ".edgeLabel "
+    "{ background-color: #0f1b30 !important; color: #f4f6fb !important; } "
+    ".node rect, .node polygon, .node circle "
+    "{ fill: #7fb8ec !important; stroke: #2f6fb0 !important; } "
+    ".node .label, .node .label div, .nodeLabel "
+    "{ color: #0a1a2e !important; }'"
+    "}}%%"
+)
+
+
+def _apply_mermaid_theme(mermaid_code: str) -> str:
+    """Prefixa o diagrama com um tema Mermaid de alto contraste.
+
+    O tema padrão do mermaid.js renderiza as linhas de conexão em cinza claro
+    e finas — quase invisíveis contra o fundo escuro do Streamlit. Injeta uma
+    diretiva ``%%{init: ...}%%`` (deve ser a primeira linha do diagrama) para
+    engrossar/colorir as linhas e setas sem alterar o texto/estrutura do grafo.
+    """
+    if not mermaid_code or mermaid_code.lstrip().startswith("%%{init"):
+        return mermaid_code
+    return f"{_MERMAID_INIT_DIRECTIVE}\n{mermaid_code}"
+
+
 # ─── Helpers de renderização ──────────────────────────────────────────────────
 def _tags_html(items: list, css_class: str = "detail-tag") -> str:
     if not items:
@@ -736,6 +802,7 @@ def render_process_detail(detail: dict) -> None:
                     script_clean = mermaid_script.strip()
                     if script_clean.startswith("```"):
                         script_clean = script_clean.strip("`").removeprefix("mermaid").strip()
+                    script_clean = _apply_mermaid_theme(_quote_mermaid_labels(script_clean))
                     st.mermaid_chart(script_clean)
 
         if not found_any:

@@ -12,3 +12,6 @@ cloud-sql-python-connector[pg8000]>=1.12.0
 # Autenticação GCP (ADC no Cloud Run / service account local)
 google-auth>=2.29.0
 google-auth-httplib2>=0.2.0
+
+# Carrega POSTGRES_USER/POSTGRES_PASSWORD do .env em desenvolvimento local
+python-dotenv>=1.0.0
