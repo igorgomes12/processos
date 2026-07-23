@@ -10,28 +10,13 @@ completa N0 → N1 → N2 → N3 → N4 → N5 com Mermaid para o diagrama de fl
 
 from __future__ import annotations
 
+import html
 import os
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
-
-# ─── Import do normalizador Mermaid (mesmo usado no pipeline PDF) ────────────
-try:
-    import sys as _sys
-    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from agente_gerador_pdf_md.tools.markdown_to_pdf_tool import _clean_mermaid_code as _normalise_mermaid
-except Exception as _e:
-    import sys as _sys
-    print(f"[WARN] _clean_mermaid_code não importado: {_e} — usando fallback básico", file=_sys.stderr)
-    import re as _re
-    def _normalise_mermaid(s: str) -> str:  # type: ignore[misc]
-        """Fallback: colapsa quebras dentro de labels."""
-        s = s.replace('\r\n', '\n').replace('\r', '\n')
-        s = _re.sub(r'(\[[^\]]*?)\n([^\]]*?\])', lambda m: m.group(0).replace('\n', ' '), s)
-        s = _re.sub(r'(\{[^}]*?)\n([^}]*?\})', lambda m: m.group(0).replace('\n', ' '), s)
-        return s
 
 # ─── Caminhos / configurações ────────────────────────────────────────────────
 _ROOT             = Path(__file__).resolve().parent
@@ -547,7 +532,8 @@ def load_mermaid(n2_id: str) -> str | None:
 def _tags_html(items: list, css_class: str = "detail-tag") -> str:
     if not items:
         return '<span style="color:#6c757d;font-size:0.8rem;font-style:italic;">Não informado</span>'
-    return "".join(f'<span class="{css_class}">{item}</span>' for item in items)
+    safe_class = html.escape(css_class, quote=True)
+    return "".join(f'<span class="{safe_class}">{html.escape(str(item))}</span>' for item in items)
 
 
 def _metric_html(emoji: str, value: int, label: str, accent: bool = False) -> str:
@@ -560,88 +546,6 @@ def _metric_html(emoji: str, value: int, label: str, accent: bool = False) -> st
         f'</div>'
     )
 
-
-def _render_mermaid_html(script: str) -> str:
-    """Gera HTML com mermaid.js CDN para renderização inline."""
-    # Remove code fences se presentes
-    script = script.strip()
-    if script.startswith("```mermaid"):
-        script = script[len("```mermaid"):].strip()
-    if script.startswith("```"):
-        script = script[3:].strip()
-    if script.endswith("```"):
-        script = script[:-3].strip()
-
-    # Normaliza quebras de linha dentro de labels (causa de 'Syntax error in text')
-    script = _normalise_mermaid(script)
-
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-    <style>
-        body {{ background:#FFFFFF; margin:0; padding:16px; font-family:'Inter',sans-serif; }}
-        .mermaid {{ display:flex; justify-content:center; }}
-        svg {{ max-width:100%; }}
-    </style>
-</head>
-<body>
-    <div class="mermaid">
-{script}
-    </div>
-    <script>
-        mermaid.initialize({{
-            startOnLoad: true,
-            theme: 'base',
-            themeVariables: {{
-                primaryColor: '#1a3560',
-                primaryTextColor: '#FFFFFF',
-                primaryBorderColor: '#071A40',
-                lineColor: '#1E5BB0',
-                secondaryColor: '#EBF0F8',
-                tertiaryColor: '#F4F5F7',
-                fontSize: '14px'
-            }}
-        }});
-    </script>
-</body>
-</html>"""
-
-# ─── Renderização Mermaid ────────────────────────────────────────────────────
-def _fetch_mermaid_image_bytes(script: str) -> bytes | None:
-    """Renderiza o script Mermaid como PNG via mermaid.ink.
-
-    Aplica _normalise_mermaid para corrigir quebras de linha dentro de labels,
-    codifica em base64 e chama https://mermaid.ink/img/{base64}.
-    Retorna bytes PNG ou None em caso de falha.
-    """
-    import base64
-    import urllib.request
-
-    s = script.strip()
-    if s.startswith("```mermaid"):
-        s = s[len("```mermaid"):].strip()
-    if s.startswith("```"):
-        s = s[3:].strip()
-    if s.endswith("```"):
-        s = s[:-3].strip()
-
-    s = _normalise_mermaid(s)
-
-    try:
-        b64 = base64.urlsafe_b64encode(s.encode("utf-8")).decode("ascii")
-        url = f"https://mermaid.ink/img/{b64}"
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "image/png,image/*,*/*"},
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = resp.read()
-        return data if len(data) > 100 else None
-    except Exception as _e:
-        import sys
-        print(f"[Mermaid][ERROR] mermaid.ink falhou: {_e}", file=sys.stderr)
-        return None
 
 # ─── Renderização do painel principal ────────────────────────────────────────
 def render_process_detail(detail: dict) -> None:
@@ -829,21 +733,10 @@ def render_process_detail(detail: dict) -> None:
                         f'{n2_data["nome"]}</div>',
                         unsafe_allow_html=True,
                     )
-                    img_bytes = _fetch_mermaid_image_bytes(mermaid_script)
-                    if img_bytes:
-                        _, col_img, _ = st.columns([2, 2, 2])
-                        with col_img:
-                            st.image(
-                                img_bytes,
-                                use_container_width=True,
-                            )
-                    else:
-                        # Fallback CDN caso mermaid.ink não responda
-                        components.html(
-                            _render_mermaid_html(mermaid_script),
-                            height=600,
-                            scrolling=True,
-                        )
+                    script_clean = mermaid_script.strip()
+                    if script_clean.startswith("```"):
+                        script_clean = script_clean.strip("`").removeprefix("mermaid").strip()
+                    st.mermaid_chart(script_clean)
 
         if not found_any:
             st.info(

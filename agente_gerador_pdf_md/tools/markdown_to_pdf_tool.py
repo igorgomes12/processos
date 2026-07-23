@@ -115,23 +115,23 @@ def _clean_mermaid_code(mermaid_code: str) -> str:
     formatted = rest
     
     # Substitui "] X[", "] X(", "] X{" por "]\nX[", "]\nX(", "]\nX{"
-    formatted = re.sub(r'\]\s+([A-Z][\[{(])', r']\n\1', formatted)
-    
+    formatted = re.sub(r'\]\s+([A-Za-z_][\[{(])', r']\n\1', formatted)
+
     # Substitui ") X[", ") X(", ") X{" por ")\nX[", ")\nX(", ")\nX{"
-    formatted = re.sub(r'\)\s+([A-Z][\[{(])', r')\n\1', formatted)
-    
+    formatted = re.sub(r'\)\s+([A-Za-z_][\[{(])', r')\n\1', formatted)
+
     # Substitui "} X[", "} X(", "} X{" por "}\nX[", "}\nX(", "}\nX{"
-    formatted = re.sub(r'\}\s+([A-Z][\[{(])', r'}\n\1', formatted)
-    
+    formatted = re.sub(r'\}\s+([A-Za-z_][\[{(])', r'}\n\1', formatted)
+
     # Substitui "], X ", ") X ", "} X " (referência a nó já definido) por quebra antes do nó
-    # Exemplo: "C -- Não --> E E --> F" deve virar "C -- Não --> E\nE --> F"
-    formatted = re.sub(r'\]\s+([A-Z])\s+', r']\n\1 ', formatted)
-    formatted = re.sub(r'\)\s+([A-Z])\s+', r')\n\1 ', formatted)
-    formatted = re.sub(r'\}\s+([A-Z])\s+', r'}\n\1 ', formatted)
-    
-    # Separa nós referenciados que ficam juntos: "E E -->" deve virar "E\nE -->"
-    # Pattern: nó (letra maiúscula) + espaço + outro nó + seta
-    formatted = re.sub(r'([A-Z])\s+([A-Z]\s*(?:-->|--|==|\.\.>))', r'\1\n\2', formatted)
+    # Exemplo: "c -- Não --> e e --> f" deve virar "c -- Não --> e\ne --> f"
+    formatted = re.sub(r'\]\s+([A-Za-z_])\s+', r']\n\1 ', formatted)
+    formatted = re.sub(r'\)\s+([A-Za-z_])\s+', r')\n\1 ', formatted)
+    formatted = re.sub(r'\}\s+([A-Za-z_])\s+', r'}\n\1 ', formatted)
+
+    # Separa nós referenciados que ficam juntos: "e e -->" deve virar "e\ne -->"
+    # Pattern: nó (letra) + espaço + outro nó + seta
+    formatted = re.sub(r'([A-Za-z_])\s+([A-Za-z_]\s*(?:-->|--|==|\.\.>))', r'\1\n\2', formatted)
     
     # Monta o código completo
     cleaned = f"{diagram_type}\n{formatted}"
