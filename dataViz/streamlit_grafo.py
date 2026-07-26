@@ -11,6 +11,7 @@ completa N0 → N1 → N2 → N3 → N4 → N5 com Mermaid para o diagrama de fl
 from __future__ import annotations
 
 import html
+import logging
 import os
 import re
 from pathlib import Path
@@ -19,6 +20,8 @@ from typing import Any
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # ─── Caminhos / configurações ────────────────────────────────────────────────
 _ROOT             = Path(__file__).resolve().parent
@@ -602,6 +605,18 @@ def _tags_html(items: list, css_class: str = "detail-tag") -> str:
     return "".join(f'<span class="{safe_class}">{html.escape(str(item))}</span>' for item in items)
 
 
+def _esc(value: Any) -> str:
+    """Escapa qualquer valor para uso seguro dentro de HTML (previne XSS).
+
+    Necessário porque nomes/descrições vêm do JSON extraído por LLM a partir
+    de documentos enviados por usuários — texto não confiável que pode
+    conter marcações HTML/JS maliciosas.
+    """
+    if value is None:
+        return ""
+    return html.escape(str(value), quote=True)
+
+
 def _metric_html(emoji: str, value: int, label: str, accent: bool = False) -> str:
     cls = "metric-card accent" if accent else "metric-card"
     return (
@@ -619,7 +634,7 @@ def render_process_detail(detail: dict) -> None:
 
     # Coleta nomes dos N1 e contagem de sistemas para o banner
     n1_nomes = [n1["nome"] for n1 in detail["hierarquia"].values()]
-    n1_txt   = ", ".join(n1_nomes[:3])
+    n1_txt   = ", ".join(_esc(n) for n in n1_nomes[:3])
     if len(n1_nomes) > 3:
         n1_txt += f" +{len(n1_nomes) - 3} mais"
 
@@ -645,7 +660,7 @@ def render_process_detail(detail: dict) -> None:
     st.markdown(
         f"""
         <div class="proc-header">
-            <div class="proc-header-title">🏗️ {detail["frente_nome"]}</div>
+            <div class="proc-header-title">🏗️ {_esc(detail["frente_nome"])}</div>
             <div class="proc-header-meta">
                 <span>{meta_line2}</span>
             </div>
@@ -692,7 +707,7 @@ def render_process_detail(detail: dict) -> None:
                             f'<div style="margin:8px 0 6px;">'
                             f'<span class="level-badge badge-n2">Processo</span>'
                             f'<span style="font-size:0.88rem;font-weight:700;color:#1E5BB0;">'
-                            f'{n2_data["nome"]}</span></div>',
+                            f'{_esc(n2_data["nome"])}</span></div>',
                             unsafe_allow_html=True,
                         )
 
@@ -702,12 +717,12 @@ def render_process_detail(detail: dict) -> None:
                                 f'<div style="margin:6px 0 4px 12px;">'
                                 f'<span class="level-badge badge-n3">Tarefa</span>'
                                 f'<span style="font-size:0.84rem;font-weight:600;color:#006D75;">'
-                                f'{n3_data["nome"]}</span></div>',
+                                f'{_esc(n3_data["nome"])}</span></div>',
                                 unsafe_allow_html=True,
                             )
 
                             for n4_id, n4_data in n3_data["n4s"].items():
-                                descricao = n4_data.get("descricao") or "Não informado"
+                                descricao = _esc(n4_data.get("descricao") or "Não informado")
                                 entradas  = _tags_html(n4_data.get("entradas") or [])
                                 saidas    = _tags_html(n4_data.get("saidas") or [])
                                 sistemas  = _tags_html(
@@ -728,7 +743,7 @@ def render_process_detail(detail: dict) -> None:
                                     <div class="step-card" style="margin-left:24px;">
                                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
                                             <span class="level-badge badge-n4">Etapa</span>
-                                            <span class="step-title" style="margin:0;">{n4_data["nome"]}</span>
+                                            <span class="step-title" style="margin:0;">{_esc(n4_data["nome"])}</span>
                                         </div>
                                         <div style="margin-bottom:10px;">
                                             <div style="font-size:0.65rem;color:#6c757d;font-weight:600;
@@ -796,7 +811,7 @@ def render_process_detail(detail: dict) -> None:
                         f'<div style="font-size:0.82rem;font-weight:700;color:#1a3560;'
                         f'margin:12px 0 4px;">'
                         f'<span class="level-badge badge-n2">Processo</span>'
-                        f'{n2_data["nome"]}</div>',
+                        f'{_esc(n2_data["nome"])}</div>',
                         unsafe_allow_html=True,
                     )
                     script_clean = mermaid_script.strip()
@@ -863,12 +878,12 @@ def render_process_detail(detail: dict) -> None:
         if match:
             _, _, _, label, nomes, _ = match
             tags = "".join(
-                f'<span class="detail-tag" style="margin:2px 3px;">{n}</span>'
+                f'<span class="detail-tag" style="margin:2px 3px;">{_esc(n)}</span>'
                 for n in nomes
             )
             st.markdown(
                 f'<div class="metric-detail-panel">'
-                f'<div class="metric-detail-title">{label} ({len(nomes)})</div>'
+                f'<div class="metric-detail-title">{_esc(label)} ({len(nomes)})</div>'
                 f'<div class="metric-detail-tags">{tags}</div>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -914,8 +929,6 @@ def main() -> None:
     # ── SIDEBAR ───────────────────────────────────────────────────────────────
     st.sidebar.markdown(
         '<div class="sidebar-header">'
-        '<div style="font-size:0.65rem;font-weight:700;letter-spacing:1px;'
-        'text-transform:uppercase;color:#a8c0e0;margin-bottom:4px;">Cliente</div>'
         '<div style="font-size:1rem;font-weight:700;color:#FFFFFF;">Processos AS-IS</div>'
         '<div style="font-size:0.75rem;color:#a8c0e0;margin-top:2px;">Base de Conhecimento</div>'
         '</div>',
@@ -948,8 +961,11 @@ def main() -> None:
                     st.session_state["process_detail"]  = None
                     if not resultados:
                         st.sidebar.info("Nenhum processo encontrado.")
-                except Exception as exc:
-                    st.sidebar.error(f"Erro na busca: {exc}")
+                except Exception:
+                    logger.exception("Erro na busca por termo=%r", termo)
+                    st.sidebar.error(
+                        "Não foi possível concluir a busca. Tente novamente em instantes."
+                    )
                     st.session_state["search_results"] = []
 
     # Lista de resultados
@@ -981,8 +997,13 @@ def main() -> None:
                         st.session_state["active_metric"]        = None
                         st.session_state["switch_to_passo_tab"] = True
                         st.rerun()
-                    except Exception as exc:
-                        st.sidebar.error(f"Erro ao carregar processo: {exc}")
+                    except Exception:
+                        logger.exception(
+                            "Erro ao carregar processo n0_id=%r", res["n0_id"]
+                        )
+                        st.sidebar.error(
+                            "Não foi possível carregar este processo. Tente novamente em instantes."
+                        )
 
     # ── PAINEL PRINCIPAL ──────────────────────────────────────────────────────
     detail = st.session_state.get("process_detail")
