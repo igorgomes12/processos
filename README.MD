@@ -1,6 +1,6 @@
 # agente-processos
 
-Sistema multiagente para extração, estruturação e visualização de processos de negócio **AS-IS**, construído sobre o **Google ADK (Agent Development Kit)** e modelos **Gemini**.
+Sistema multiagente para extração, estruturação e visualização de processos de negócio **AS-IS**, com geração complementar de proposta **TO-BE**, construído sobre o **Google ADK (Agent Development Kit)** e modelos **Gemini**.
 
 ---
 
@@ -9,9 +9,12 @@ Sistema multiagente para extração, estruturação e visualização de processo
 O sistema transforma documentos de processos de negócio (PDF, DOCX, imagens) em:
 
 - **Planilha Excel** estruturada (hierarquia N0–N4)
-- **Documento PDF** completo no formato AS-IS
-- **Scripts Mermaid** persistidos no Postgres (1 por N2_Processo)
-- **Interface de visualização** interativa (Streamlit)
+- **Documento PDF AS-IS** completo, com diagrama de fluxo Mermaid
+- **Documento PDF TO-BE** — proposta de processo futuro gerada a partir do AS-IS
+- **Persistência estruturada** do grafo AS-IS no Postgres (N0–N5 + arestas) e cópia do JSON bruto no Firestore
+- **Interface de visualização** interativa (Streamlit), lendo do Postgres
+
+> ⚠️ O documento **TO-BE** hoje é gerado apenas como PDF de download (artefato de sessão) — não é persistido em nenhum banco nem aparece na interface de visualização. Veja [Limitações Conhecidas](#limitações-conhecidas).
 
 ---
 
@@ -19,22 +22,26 @@ O sistema transforma documentos de processos de negócio (PDF, DOCX, imagens) em
 
 ```
 document_processor  (agente raiz / orquestrador)
-├── preparar_state_inicial          (tool local)
-├── as_is                           (sub-agente: extração JSON)
-├── save_to_firestore_from_state    (tool: JSON → Firestore)
+├── preparar_state_inicial          (tool local: carrega template Markdown)
+├── as_is_agent                     (sub-agente: documento → JSON N0–N4)
+├── save_to_firestore_from_state    (tool: JSON → Firestore, cópia bruta)
+├── save_to_postgres_from_state     (tool: JSON → Postgres, grafo N0–N5 + arestas)
+├── pdf_subagent (agente_gerador_pdf_md)   (sub-agente: JSON → Markdown AS-IS)
 ├── generate_xlsx_from_state        (tool: JSON → Excel)
-├── agente_gerador_pdf_md           (sub-agente: JSON → Markdown)
-├── generate_pdf_from_state         (tool: Markdown → PDF + Mermaid → Postgres)
-└── save_mermaid_from_state         (tool: Mermaid → Postgres n2_mermaid)
+├── generate_pdf_from_state         (tool: Markdown AS-IS → PDF + Mermaid → Postgres)
+├── save_mermaid_from_state         (tool: Mermaid → Postgres n2_mermaid, best-effort)
+├── tobe_subagent_tool (agente_gerador_md_tobe)  (sub-agente: JSON AS-IS → Markdown TO-BE)
+└── generate_pdf_tobe_from_state    (tool: Markdown TO-BE → PDF, artefato de sessão apenas)
 ```
 
 ### Modelos LLM
 
 | Agente | Modelo | ThinkingConfig |
 |--------|--------|----------------|
-| `document_processor` | `gemini-2.5-flash` | `thinking_budget=0` |
-| `as_is` | `gemini-2.5-flash` | Padrão ADK |
-| `agente_gerador_pdf_md` | `gemini-2.5-flash` | `thinking_budget=8192` |
+| `document_processor` | `gemini-2.5-flash` (via env `MODEL`) | `thinking_budget=0` |
+| `as_is` | `gemini-2.5-flash` (via env `MODEL`) | Padrão ADK |
+| `agente_gerador_pdf_md` | `gemini-2.5-flash` (hardcoded) | `thinking_budget=8192` |
+| `agente_gerador_md_tobe` | `gemini-2.5-flash` (hardcoded) | `thinking_budget=8192` |
 
 ---
 
@@ -52,15 +59,19 @@ agente-processos-main/
 ├── as_is/                       # Sub-agente de extração estruturada
 │   └── agent.py
 │
-├── agente_gerador_pdf_md/       # Sub-agente gerador de Markdown/PDF
+├── agente_gerador_pdf_md/       # Sub-agente gerador de Markdown/PDF AS-IS
 │   ├── agent.py
 │   └── tools/
 │       └── markdown_to_pdf_tool.py
 │
+├── agente_gerador_md_tobe/      # Sub-agente gerador de Markdown TO-BE
+│   ├── agent.py
+│   └── prompt-gerador-markdown-tobe.txt
+│
 ├── agent_tools/                 # Utilitários compartilhados
 │   └── json_to_xlsx.py
 │
-├── dataViz/                     # Interface de visualização (Streamlit)
+├── dataViz/                     # Interface de visualização (Streamlit) — lê só do Postgres, só AS-IS
 │   └── streamlit_grafo.py
 │
 ├── prompts/                     # Prompts externos dos sub-agentes
@@ -144,38 +155,52 @@ streamlit run dataViz/streamlit_grafo.py
 
 ## Pipeline de Processamento
 
+O `document_processor` executa as 11 etapas abaixo em sequência, num único turno,
+sem interromper mesmo se uma tool falhar (política de continuidade — só responde
+ao usuário depois da etapa 11):
+
 ```
 1. Usuário envia documento (PDF/DOCX/imagem)
        ↓
 2. preparar_state_inicial()
    └→ state["pdf_model_md"] = template Markdown
        ↓
-3. as_is_agent(documento)
+3. as_is_agent(documento)                         ← LLM
    └→ state["pdf_input_json"] = JSON N0–N4
        ↓
-4. save_to_firestore_from_state()
-   └→ Firestore: coleção 'processos'
+4. save_to_firestore_from_state()                 ← tool determinística
+   └→ Firestore: coleção 'processos' (cópia bruta do JSON)
        ↓
-5. generate_xlsx_from_state()
-   └→ Artefato: processos.xlsx
+5. save_to_postgres_from_state()                  ← tool determinística
+   └→ Postgres: grafo n0_frente…n5_atributos + arestas (upsert idempotente)
        ↓
-6. pdf_subagent()
+6. pdf_subagent()                                 ← LLM
    └→ state["pdf_markdown"] = Markdown completo AS-IS
        ↓
-7. generate_pdf_from_state()
+7. generate_xlsx_from_state()
+   └→ Artefato: processos.xlsx
+       ↓
+8. generate_pdf_from_state()
    ├→ Artefato: documento_processo.pdf
    └→ Side-effect: _upsert_mermaid_sync() → Postgres n2_mermaid
        ↓
-8. save_mermaid_from_state()
-   └→ Postgres: n2_mermaid (fallback / idempotente)
+9. save_mermaid_from_state()                      ← fallback best-effort, idempotente
+   └→ Postgres: n2_mermaid (garante persistência mesmo se o side-effect da etapa 8 falhar)
+       ↓
+10. tobe_subagent_tool()                          ← LLM (lê pdf_input_json)
+    └→ state["tobe_markdown"] = Markdown da proposta TO-BE
+       ↓
+11. generate_pdf_tobe_from_state()
+    └→ Artefato: documento_processo_tobe.pdf  (⚠️ NÃO persistido em banco — ver Limitações Conhecidas)
 ```
 
 ### Artefatos Gerados
 
-| Arquivo | Tipo | Download ADK |
-|---------|------|:---:|
-| `processos.xlsx` | Excel estruturado N0–N4 | ✅ |
-| `documento_processo.pdf` | Documento AS-IS completo | ✅ |
+| Arquivo | Tipo | Persistido em banco? | Download ADK |
+|---------|------|:---:|:---:|
+| `processos.xlsx` | Excel estruturado N0–N4 | Dados-fonte sim (Postgres/Firestore) | ✅ |
+| `documento_processo.pdf` | Documento AS-IS completo | Dados-fonte sim (Postgres/Firestore) | ✅ |
+| `documento_processo_tobe.pdf` | Documento TO-BE (proposta futura) | ❌ Não | ✅ |
 
 ---
 
@@ -220,11 +245,24 @@ POSTGRES_PASSWORD=<senha_da_instancia_cloud_sql>
 
 ### Credenciais GCP (`credentials.json`)
 
-Service account com permissões:
+Usado **apenas em desenvolvimento local**. Prioridade de autenticação em todo o
+projeto (Firestore e Postgres): 1) `credentials.json` local, se existir; 2)
+Application Default Credentials (ADC) caso contrário — é o que roda no Vertex
+AI Agent Engine e no Cloud Run.
+
+Service account local (`agente-processos-app@...`) com permissões:
 - `roles/datastore.user` — Firestore
 - `roles/cloudsql.client` — Cloud SQL (Postgres, via Cloud SQL Python Connector)
+- `roles/logging.logWriter` — Cloud Logging
 
-> Não versionar. Adicionar ao `.gitignore`.
+Em produção (Vertex AI Agent Engine), quem grava no Firestore/Postgres é a
+service account **gerenciada automaticamente pelo Reasoning Engine**
+(`service-{PROJECT_NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com`), não
+a `credentials.json` local. Ela precisa das mesmas 2 roles (`datastore.user` e
+`cloudsql.client`) concedidas manualmente uma vez no projeto — `deploy.py`
+imprime o comando `gcloud` exato após o deploy.
+
+> `credentials.json` não é versionado. Já está no `.gitignore`.
 
 ### Instalação
 
@@ -248,13 +286,14 @@ streamlit run dataViz/streamlit_grafo.py
 
 ## Persistência de Dados
 
-| Dado | Destino | Quando |
-|------|---------|--------|
-| JSON N0–N4 | Firestore (`processos`) | Após extração pelo `as_is` |
-| Hierarquia completa | Postgres (`n0`–`n5` + arestas) | Durante persistência do grafo |
-| Script Mermaid | Postgres (`n2_mermaid`) | Side-effect de `generate_pdf_from_state` |
-| Excel | ADK artifact | Tool `generate_xlsx_from_state` |
-| PDF | ADK artifact | Tool `generate_pdf_from_state` |
+| Dado | Destino | Quando | Consumido por |
+|------|---------|--------|----------------|
+| JSON N0–N4 (bruto) | Firestore (database `as-is-processes`, coleção `processos`) | `save_to_firestore_from_state` | Ninguém hoje (write-only — nenhum código lê de volta) |
+| Grafo AS-IS completo (N0–N5 + arestas) | Postgres (`n0_frente`…`n5_atributos` + `edge_has_n*`) | `save_to_postgres_from_state` | **DataViz** (única fonte de leitura da interface) |
+| Script Mermaid | Postgres (`n2_mermaid` + `edge_has_mermaid`) | `generate_pdf_from_state` (side-effect) e `save_mermaid_from_state` (fallback) | DataViz (aba Diagrama de Fluxo) |
+| Excel | ADK artifact (download da sessão) | `generate_xlsx_from_state` | Download manual |
+| PDF AS-IS | ADK artifact (download da sessão) | `generate_pdf_from_state` | Download manual |
+| PDF TO-BE | ADK artifact (download da sessão) | `generate_pdf_tobe_from_state` | Download manual — **não há outro consumidor, dado não persiste** |
 
 ---
 
@@ -281,6 +320,32 @@ python deploy.py
 ## Documentação Adicional
 
 - **`AGENTS.MD`** — arquitetura detalhada, responsabilidades, state compartilhado, guardrails e convenções de desenvolvimento de cada agente.
+
+---
+
+## Limitações Conhecidas
+
+- **PDF TO-BE não é persistido em nenhum banco.** `agente_gerador_md_tobe` gera o
+  Markdown TO-BE e `generate_pdf_tobe_from_state` converte para PDF, mas o
+  resultado só existe como artefato de download da sessão (ADK). Diferente do
+  fluxo AS-IS (que grava em Postgres via `save_to_postgres_from_state` e no
+  Firestore via `save_to_firestore_from_state`), não existe tabela, coleção ou
+  qualquer outro registro estruturado para o TO-BE hoje. Consequências:
+  - Se o usuário não baixar o PDF na hora, o conteúdo TO-BE se perde — não dá
+    para recuperar depois sem reprocessar o documento original.
+  - O **DataViz não exibe TO-BE** — ele só lê as tabelas AS-IS do Postgres
+    (não há schema, aba ou query para TO-BE no `streamlit_grafo.py`).
+  - Não há como comparar AS-IS vs TO-BE lado a lado nem auditar propostas
+    geradas anteriormente.
+  - Correção possível: persistir o Markdown/JSON do TO-BE em tabelas próprias
+    (ex.: espelhando `n0_frente`…`n5_atributos` com sufixo `_tobe`, ou uma
+    tabela simples `n2_tobe_documento` por N2) e adicionar uma aba TO-BE no
+    DataViz. Não implementado — decisão de escopo em aberto.
+
+- **Firestore é write-only.** O JSON bruto salvo em `save_to_firestore_from_state`
+  não é lido de volta por nenhuma parte do sistema hoje (nem pelo agente, nem
+  pelo DataViz). Funciona como um backup do JSON original, não como fonte de
+  dados ativa.
 
 ---
 
