@@ -25,7 +25,7 @@ from google.adk.tools.tool_context import ToolContext
 
 from agent_tools.json_to_xlsx import json_to_xlsx
 from agente_gerador_pdf_md.tools.markdown_to_pdf_tool import _build_pdf
-from document_processor.tools.postgres_tool import _upsert_mermaid_sync
+from document_processor.tools.postgres_tool import _upsert_mermaid_sync, _upsert_tobe_sync
 
 # ─── Configurações Firestore ─────────────────────────────────────────────────
 _CREDENTIALS_PATH = Path(__file__).resolve().parents[2] / "credentials.json"
@@ -312,6 +312,7 @@ async def generate_xlsx_from_state(tool_context: ToolContext) -> Dict[str, Any]:
 
 
 _MERMAID_TIMEOUT = 60
+_TOBE_TIMEOUT = 60
 
 
 _MERMAID_BRACKET_LABEL = re.compile(r'\[([^\[\]"]*[()][^\[\]"]*)\]')
@@ -593,6 +594,44 @@ async def generate_pdf_tobe_from_state(tool_context: ToolContext) -> Dict[str, A
         filename="documento_processo_tobe.pdf",
         artifact=artifact_part,
     )
+
+    # ── Persistência do TO-BE no Postgres (side-effect garantido) ─────────────
+    # Mesmo padrão de generate_pdf_from_state para o Mermaid: garante que o
+    # documento TO-BE não se perca mesmo que o LLM não peça persistência
+    # explicitamente. Reaproveita os N2s extraídos do JSON AS-IS (pdf_input_json)
+    # pois o TO-BE é gerado a partir do mesmo processo AS-IS.
+    tobe_persist_status = "não realizada"
+    try:
+        raw_json = tool_context.state.get("pdf_input_json", "")
+        json_str = _extract_json_from_text(raw_json)
+        if not json_str:
+            tobe_persist_status = "pdf_input_json ausente ou inválido"
+            print(f"[Postgres][TO-BE][WARN] {tobe_persist_status}", file=sys.stderr)
+        else:
+            data = json.loads(json_str)
+            n2_paths = sorted({
+                (
+                    (r.get("N0") or "").strip(),
+                    (r.get("N1") or "").strip(),
+                    (r.get("N2") or "").strip(),
+                )
+                for r in data.get("rows", [])
+                if (r.get("N2") or "").strip()
+            })
+            if not n2_paths:
+                tobe_persist_status = "nenhum N2 encontrado no JSON"
+                print(f"[Postgres][TO-BE][WARN] {tobe_persist_status}", file=sys.stderr)
+            else:
+                tobe_persist_status = await asyncio.wait_for(
+                    asyncio.to_thread(_upsert_tobe_sync, n2_paths, cleaned),
+                    timeout=_TOBE_TIMEOUT,
+                )
+    except asyncio.TimeoutError:
+        tobe_persist_status = f"timeout após {_TOBE_TIMEOUT}s"
+        print(f"[Postgres][TO-BE][ERROR] {tobe_persist_status}", file=sys.stderr)
+    except Exception as _e:
+        tobe_persist_status = f"erro: {_e}"
+        print(f"[Postgres][TO-BE][ERROR] {tobe_persist_status}", file=sys.stderr)
 
     return {
         "status": "success",

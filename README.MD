@@ -11,10 +11,8 @@ O sistema transforma documentos de processos de negócio (PDF, DOCX, imagens) em
 - **Planilha Excel** estruturada (hierarquia N0–N4)
 - **Documento PDF AS-IS** completo, com diagrama de fluxo Mermaid
 - **Documento PDF TO-BE** — proposta de processo futuro gerada a partir do AS-IS
-- **Persistência estruturada** do grafo AS-IS no Postgres (N0–N5 + arestas) e cópia do JSON bruto no Firestore
-- **Interface de visualização** interativa (Streamlit), lendo do Postgres
-
-> ⚠️ O documento **TO-BE** hoje é gerado apenas como PDF de download (artefato de sessão) — não é persistido em nenhum banco nem aparece na interface de visualização. Veja [Limitações Conhecidas](#limitações-conhecidas).
+- **Persistência estruturada** do grafo AS-IS (N0–N5 + arestas) e do documento **TO-BE** (Markdown, por N2) no Postgres, e cópia do JSON bruto AS-IS no Firestore
+- **Interface de visualização** interativa (Streamlit), lendo do Postgres — inclui aba dedicada à proposta TO-BE
 
 ---
 
@@ -31,7 +29,7 @@ document_processor  (agente raiz / orquestrador)
 ├── generate_pdf_from_state         (tool: Markdown AS-IS → PDF + Mermaid → Postgres)
 ├── save_mermaid_from_state         (tool: Mermaid → Postgres n2_mermaid, best-effort)
 ├── tobe_subagent_tool (agente_gerador_md_tobe)  (sub-agente: JSON AS-IS → Markdown TO-BE)
-└── generate_pdf_tobe_from_state    (tool: Markdown TO-BE → PDF, artefato de sessão apenas)
+└── generate_pdf_tobe_from_state    (tool: Markdown TO-BE → PDF + Postgres n2_tobe_documento)
 ```
 
 ### Modelos LLM
@@ -71,7 +69,7 @@ agente-processos-main/
 ├── agent_tools/                 # Utilitários compartilhados
 │   └── json_to_xlsx.py
 │
-├── dataViz/                     # Interface de visualização (Streamlit) — lê só do Postgres, só AS-IS
+├── dataViz/                     # Interface de visualização (Streamlit) — lê do Postgres (AS-IS + TO-BE)
 │   └── streamlit_grafo.py
 │
 ├── prompts/                     # Prompts externos dos sub-agentes
@@ -102,6 +100,7 @@ Schema completo em `installation_scripts/postgres_schema.sql`.
 | `n4_etapa` | Etapa | `id` |
 | `n5_atributos` | Atributos da etapa | `id` |
 | `n2_mermaid` | Script Mermaid por processo | `n2_id` (FK → n2_processo) |
+| `n2_tobe_documento` | Documento Markdown TO-BE por processo | `n2_id` (FK → n2_processo) |
 
 ### Tabelas de Relacionamento (Arestas)
 
@@ -113,10 +112,15 @@ Schema completo em `installation_scripts/postgres_schema.sql`.
 | `edge_has_n4` | n3_tarefa → n4_etapa |
 | `edge_has_n5` | n4_etapa → n5_atributos |
 | `edge_has_mermaid` | n2_processo → n2_mermaid |
+| `edge_has_tobe` | n2_processo → n2_tobe_documento |
 
 ### Cardinalidade Mermaid
 
 > **1 script Mermaid : 1 N2_Processo** — a PK `n2_id` garante unicidade. O mesmo script gerado para o documento é persistido para cada N2 distinto presente no JSON.
+
+### Cardinalidade TO-BE
+
+> **1 documento TO-BE : 1 N2_Processo** — mesmo padrão do Mermaid. A PK `n2_id` de `n2_tobe_documento` garante unicidade; o mesmo Markdown TO-BE gerado para o documento é persistido para cada N2 distinto presente no JSON AS-IS.
 
 ---
 
@@ -150,6 +154,11 @@ streamlit run dataViz/streamlit_grafo.py
 - Renderiza o diagrama via `mermaid.ink/img/{base64}` → PNG → `st.image()`
 - Fallback automático para CDN Mermaid JS (`components.html`) se `mermaid.ink` não responder
 - Normalização automática do script Mermaid (colapsa quebras de linha dentro de labels, CRLF → LF)
+
+**Aba: Proposta TO-BE**
+- Lê o Markdown TO-BE da tabela `n2_tobe_documento` para cada N2 do processo selecionado
+- Renderiza via `st.markdown()` sem `unsafe_allow_html` (conteúdo gerado por LLM, tratado como texto/markdown puro — nunca como HTML)
+- Exibe aviso caso o processo ainda não tenha proposta TO-BE gerada
 
 ---
 
@@ -191,7 +200,8 @@ ao usuário depois da etapa 11):
     └→ state["tobe_markdown"] = Markdown da proposta TO-BE
        ↓
 11. generate_pdf_tobe_from_state()
-    └→ Artefato: documento_processo_tobe.pdf  (⚠️ NÃO persistido em banco — ver Limitações Conhecidas)
+    ├→ Artefato: documento_processo_tobe.pdf
+    └→ Side-effect: _upsert_tobe_sync() → Postgres n2_tobe_documento
 ```
 
 ### Artefatos Gerados
@@ -200,7 +210,7 @@ ao usuário depois da etapa 11):
 |---------|------|:---:|:---:|
 | `processos.xlsx` | Excel estruturado N0–N4 | Dados-fonte sim (Postgres/Firestore) | ✅ |
 | `documento_processo.pdf` | Documento AS-IS completo | Dados-fonte sim (Postgres/Firestore) | ✅ |
-| `documento_processo_tobe.pdf` | Documento TO-BE (proposta futura) | ❌ Não | ✅ |
+| `documento_processo_tobe.pdf` | Documento TO-BE (proposta futura) | ✅ Sim (Markdown em `n2_tobe_documento`, por N2) | ✅ |
 
 ---
 
@@ -291,9 +301,10 @@ streamlit run dataViz/streamlit_grafo.py
 | JSON N0–N4 (bruto) | Firestore (database `as-is-processes`, coleção `processos`) | `save_to_firestore_from_state` | Ninguém hoje (write-only — nenhum código lê de volta) |
 | Grafo AS-IS completo (N0–N5 + arestas) | Postgres (`n0_frente`…`n5_atributos` + `edge_has_n*`) | `save_to_postgres_from_state` | **DataViz** (única fonte de leitura da interface) |
 | Script Mermaid | Postgres (`n2_mermaid` + `edge_has_mermaid`) | `generate_pdf_from_state` (side-effect) e `save_mermaid_from_state` (fallback) | DataViz (aba Diagrama de Fluxo) |
+| Documento TO-BE (Markdown) | Postgres (`n2_tobe_documento` + `edge_has_tobe`) | `generate_pdf_tobe_from_state` (side-effect) | **DataViz** (aba Proposta TO-BE) |
 | Excel | ADK artifact (download da sessão) | `generate_xlsx_from_state` | Download manual |
 | PDF AS-IS | ADK artifact (download da sessão) | `generate_pdf_from_state` | Download manual |
-| PDF TO-BE | ADK artifact (download da sessão) | `generate_pdf_tobe_from_state` | Download manual — **não há outro consumidor, dado não persiste** |
+| PDF TO-BE | ADK artifact (download da sessão) | `generate_pdf_tobe_from_state` | Download manual (o conteúdo também fica no Postgres como Markdown, diferente do PDF em si) |
 
 ---
 
@@ -325,23 +336,6 @@ python deploy.py
 
 ## Limitações Conhecidas
 
-- **PDF TO-BE não é persistido em nenhum banco.** `agente_gerador_md_tobe` gera o
-  Markdown TO-BE e `generate_pdf_tobe_from_state` converte para PDF, mas o
-  resultado só existe como artefato de download da sessão (ADK). Diferente do
-  fluxo AS-IS (que grava em Postgres via `save_to_postgres_from_state` e no
-  Firestore via `save_to_firestore_from_state`), não existe tabela, coleção ou
-  qualquer outro registro estruturado para o TO-BE hoje. Consequências:
-  - Se o usuário não baixar o PDF na hora, o conteúdo TO-BE se perde — não dá
-    para recuperar depois sem reprocessar o documento original.
-  - O **DataViz não exibe TO-BE** — ele só lê as tabelas AS-IS do Postgres
-    (não há schema, aba ou query para TO-BE no `streamlit_grafo.py`).
-  - Não há como comparar AS-IS vs TO-BE lado a lado nem auditar propostas
-    geradas anteriormente.
-  - Correção possível: persistir o Markdown/JSON do TO-BE em tabelas próprias
-    (ex.: espelhando `n0_frente`…`n5_atributos` com sufixo `_tobe`, ou uma
-    tabela simples `n2_tobe_documento` por N2) e adicionar uma aba TO-BE no
-    DataViz. Não implementado — decisão de escopo em aberto.
-
 - **Firestore é write-only.** O JSON bruto salvo em `save_to_firestore_from_state`
   não é lido de volta por nenhuma parte do sistema hoje (nem pelo agente, nem
   pelo DataViz). Funciona como um backup do JSON original, não como fonte de
@@ -353,5 +347,6 @@ python deploy.py
 
 - O `document_processor` usa `thinking_budget=0` para evitar respostas vazias ao processar PDFs com labels de confidencialidade (MSIP).
 - A persistência do Mermaid é **side-effect determinístico** de `generate_pdf_from_state` — não depende do LLM chamar `save_mermaid_from_state`.
+- A persistência do TO-BE é **side-effect determinístico** de `generate_pdf_tobe_from_state` (mesmo padrão do Mermaid) — não depende de uma tool adicional chamada pelo LLM.
 - Todas as operações de I/O (Firestore, Postgres, Excel, PDF) são executadas em `asyncio.to_thread()` para não bloquear o event loop do ADK.
 - O UUID de cada nó é gerado via **UUID v5 determinístico** (`_make_id(n0, n1, n2, ...)`) — reprocessar o mesmo documento é idempotente.

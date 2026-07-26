@@ -537,6 +537,15 @@ def load_mermaid(n2_id: str) -> str | None:
     return rows[0]["mermaid_script"] if rows else None
 
 
+def load_tobe(n2_id: str) -> str | None:
+    """Carrega o documento Markdown TO-BE associado ao n2_processo selecionado."""
+    rows = _run_query(
+        "SELECT tobe_markdown FROM n2_tobe_documento WHERE n2_id = %s",
+        params=(n2_id,),
+    )
+    return rows[0]["tobe_markdown"] if rows else None
+
+
 _MERMAID_BRACKET_LABEL = re.compile(r'\[([^\[\]"]*[()][^\[\]"]*)\]')
 _MERMAID_BRACE_LABEL = re.compile(r'\{([^{}"]*[()][^{}"]*)\}')
 
@@ -670,7 +679,9 @@ def render_process_detail(detail: dict) -> None:
     )
 
     # Abas
-    tab_passo, tab_fluxo = st.tabs(["📋  Passo a Passo", "🔀  Diagrama de Fluxo"])
+    tab_passo, tab_fluxo, tab_tobe = st.tabs(
+        ["📋  Passo a Passo", "🔀  Diagrama de Fluxo", "📝  Proposta TO-BE"]
+    )
 
     # Se o usuário clicou num card da sidebar enquanto estava na aba Diagrama,
     # injeta JS que clica na primeira aba (Passo a Passo) e consome o flag.
@@ -824,6 +835,44 @@ def render_process_detail(detail: dict) -> None:
             st.info(
                 "Nenhum diagrama Mermaid encontrado. "
                 "Execute o agente para gerar os diagramas.",
+                icon="ℹ️",
+            )
+
+    # ── ABA: Proposta TO-BE ────────────────────────────────────────────────────
+    with tab_tobe:
+        st.markdown(
+            '<div class="section-title">Proposta de Processo Futuro (TO-BE) por Processo (N2)</div>',
+            unsafe_allow_html=True,
+        )
+
+        hierarquia = detail["hierarquia"]
+        found_any_tobe = False
+
+        for n1_data in hierarquia.values():
+            for n2_id, n2_data in n1_data["n2s"].items():
+                with st.spinner(f"Carregando proposta TO-BE de '{n2_data['nome']}'…"):
+                    tobe_markdown = load_tobe(n2_id)
+
+                if tobe_markdown:
+                    found_any_tobe = True
+                    st.markdown(
+                        f'<div style="font-size:0.82rem;font-weight:700;color:#1a3560;'
+                        f'margin:12px 0 4px;">'
+                        f'<span class="level-badge badge-n2">Processo</span>'
+                        f'{_esc(n2_data["nome"])}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    with st.container(border=True):
+                        # unsafe_allow_html=False (padrão): renderiza o Markdown
+                        # gerado pelo LLM como texto/markdown puro, sem interpretar
+                        # tags HTML embutidas — mesma cautela do restante da página
+                        # com conteúdo vindo de documentos de usuário.
+                        st.markdown(tobe_markdown)
+
+        if not found_any_tobe:
+            st.info(
+                "Nenhuma proposta TO-BE encontrada. "
+                "Execute o agente para gerar a proposta.",
                 icon="ℹ️",
             )
 

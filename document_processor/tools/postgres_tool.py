@@ -477,3 +477,70 @@ def _upsert_mermaid_sync(n2_paths: List[Tuple[str, str, str]], mermaid_script: s
         f"Tabelas: n2_mermaid + edge_has_mermaid "
         f"(database: {_DB_NAME}, instância: {_INSTANCE_CONNECTION_NAME})."
     )
+
+
+# --- Persistência do TO-BE ----------------------------------------------------
+
+def _upsert_tobe_sync(n2_paths: List[Tuple[str, str, str]], tobe_markdown: str) -> str:
+    """Faz upsert do documento Markdown TO-BE para cada n2_processo no Postgres (síncrono).
+
+    Persiste em n2_tobe_documento e edge_has_tobe numa única transação.
+    Idempotente via ON CONFLICT DO UPDATE — reprocessamentos sobrescrevem sem duplicar.
+    Deve ser chamado via asyncio.to_thread() para não bloquear o event loop.
+
+    Mesmo padrão de _upsert_mermaid_sync: a PK de n2_tobe_documento é o próprio
+    n2_id, garantindo 1 e somente 1 documento TO-BE por n2_processo (o mesmo
+    documento gerado para a solicitação é associado a cada N2 distinto do AS-IS).
+
+    Args:
+        n2_paths: Lista de triplas (n0_nome, n1_nome, n2_nome) que identificam
+                  univocamente cada n2_processo.
+        tobe_markdown: Markdown puro do documento TO-BE (sem code fences).
+
+    Returns:
+        Mensagem de resumo da operação.
+    """
+    if not n2_paths:
+        return "[Postgres][TO-BE] Nenhum N2 fornecido — persistência ignorada."
+    if not tobe_markdown or not tobe_markdown.strip():
+        return "[Postgres][TO-BE] Markdown TO-BE vazio — persistência ignorada."
+
+    tobe_rows: List[Tuple] = []
+    edge_rows: List[Tuple] = []
+    for (n0_nome, n1_nome, n2_nome) in n2_paths:
+        # Mesmo algoritmo de _persistir_no_postgres — garante mesmo UUID
+        n2_id = _make_id(n0_nome, n1_nome, n2_nome)
+        tobe_rows.append((n2_id, tobe_markdown))
+        edge_rows.append((n2_id, n2_id))  # tobe_id == n2_id (relação 1:1)
+
+    conn = _get_connection()
+    cur = conn.cursor()
+    try:
+        cur.executemany(
+            "INSERT INTO n2_tobe_documento (n2_id, tobe_markdown, gerado_em) "
+            "VALUES (%s, %s, now()) "
+            "ON CONFLICT (n2_id) DO UPDATE SET "
+            "tobe_markdown = EXCLUDED.tobe_markdown, gerado_em = now()",
+            tobe_rows,
+        )
+        cur.executemany(
+            "INSERT INTO edge_has_tobe (n2_id, tobe_id) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING",
+            edge_rows,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+    nomes_resumo = ", ".join(f"'{p[2]}'" for p in n2_paths[:5])
+    sufixo = f" ... e mais {len(n2_paths) - 5}" if len(n2_paths) > 5 else ""
+    return (
+        f"[Postgres][TO-BE] Documento persistido para {len(n2_paths)} N2(s): "
+        f"{nomes_resumo}{sufixo}. "
+        f"Tabelas: n2_tobe_documento + edge_has_tobe "
+        f"(database: {_DB_NAME}, instância: {_INSTANCE_CONNECTION_NAME})."
+    )

@@ -85,5 +85,17 @@ CREATE TABLE IF NOT EXISTS edge_has_mermaid (
     PRIMARY KEY (n2_id, mermaid_id)
 );
 
+CREATE TABLE IF NOT EXISTS n2_tobe_documento (
+    n2_id         UUID PRIMARY KEY REFERENCES n2_processo(id),
+    tobe_markdown TEXT NOT NULL,
+    gerado_em     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS edge_has_tobe (
+    n2_id   UUID NOT NULL REFERENCES n2_processo(id),
+    tobe_id UUID NOT NULL REFERENCES n2_tobe_documento(n2_id),
+    PRIMARY KEY (n2_id, tobe_id)
+);
+
 -- Índice para a busca por LIKE/ILIKE em N0_Frente.nome (dataViz/streamlit_grafo.py)
 CREATE INDEX IF NOT EXISTS idx_n0_frente_nome ON n0_frente (lower(nome));
