@@ -116,17 +116,18 @@ remote_agent = agent_engines.create(
         "./agent_tools",
         "./as_is",
         "./agente_gerador_pdf_md",
+        "./agente_gerador_md_tobe",
         "./document_processor",
         "./logger",
         "./prompts",
-        # Workaround para bug na imagem base reasoning-engine-py311:prod (2026-03-02):
-        # o step 'compileall' falha porque /code/.venv/bin/python não existe na nova
-        # versão da imagem. O script abaixo cria o symlink necessário antes do step.
-        "installation_scripts/fix_venv.sh",
     ],
-    build_options={
-        "installation_scripts": ["installation_scripts/fix_venv.sh"],
-    },
+    # NOTA: build_options.installation_scripts com fix_venv.sh foi removido nesta
+    # tentativa. O workaround era para um bug na imagem base reasoning-engine-py311:prod
+    # (2026-03-02); o build atual usa assembly-service-py314:prod (imagem diferente,
+    # Python 3.14) e o build falha em "poetry: Too many levels of symbolic links" logo
+    # no passo de instalação de requirements — antes mesmo de chegar no passo de
+    # compileall que o workaround corrigia. Testando se o workaround (obsoleto para
+    # esta imagem) é a própria causa do encadeamento de shebang que gera o ELOOP.
     display_name="agente-processos",
     description="Pipeline BPM AS-IS: extração JSON N0-N4 + geração de planilha XLSX e documento PDF",
     env_vars={

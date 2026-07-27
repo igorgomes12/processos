@@ -324,7 +324,18 @@ O script `deploy.py` publica o agente no **Vertex AI Agent Engine** (Reasoning E
 python deploy.py
 ```
 
-> **Bug na imagem base `reasoning-engine-py311:prod`:** A imagem atual não cria `/code/.venv/bin/python` e executa como não-root, causando falha no build. O script `installation_scripts/fix_venv.sh` aplica o workaround automaticamente via `build_options.installation_scripts`.
+> **Histórico:** a imagem base usada pelo Reasoning Engine mudou de
+> `reasoning-engine-py311:prod` para `assembly-service-py314:prod` (Python 3.14).
+> O workaround antigo (`installation_scripts/fix_venv.sh`, que criava um wrapper
+> em `/code/.venv/bin/python` para contornar um bug de permissão no `compileall`
+> da imagem py311) ficou obsoleto e passou a **quebrar o build** na imagem nova —
+> o wrapper (um script Python, não um binário/symlink real) gera uma cadeia de
+> shebang que o `poetry` da imagem não resolve, falhando com
+> `poetry: Too many levels of symbolic links`. O workaround foi removido de
+> `deploy.py` (não é mais necessário na imagem atual). Se esse erro específico
+> voltar a aparecer em uma imagem futura, o script `fix_venv.sh` ainda existe em
+> `installation_scripts/` como referência, mas precisaria ser adaptado (detectar
+> `python3.14`, não recriar `/code/.venv/bin/python` como script simples).
 
 ---
 
