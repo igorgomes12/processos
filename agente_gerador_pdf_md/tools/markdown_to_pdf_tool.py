@@ -597,6 +597,15 @@ def parse_markdown_to_reportlab(markdown_text: str) -> list:
             i += 1
             continue
         
+        # Linhas separadoras "soltas" (ex: '#' ou '##' sozinho, ou '---'/'***'/'___'
+        # como divisor temático) não têm texto para virar heading nem tabela — sem
+        # este filtro, caem no fallback de parágrafo comum e o marcador literal
+        # (ex: um "#" solto) aparece impresso no PDF.
+        stripped_line = line.strip()
+        if re.fullmatch(r'#{1,6}', stripped_line) or re.fullmatch(r'[-*_]{3,}', stripped_line):
+            i += 1
+            continue
+
         # Headers (níveis 1-6, com ou sem espaço após '#')
         heading_match = re.match(r'^\s*(#{1,6})\s*(.+?)\s*$', line)
         if heading_match:

@@ -95,13 +95,13 @@ print("   Callbacks    : removidos (não serializáveis para deploy)")
 remote_agent = agent_engines.create(
     agent_engine=root_agent,
     requirements=[
-        # Versões alinhadas ao ambiente local (venv Python 3.11.3) para garantir
+        # Versões alinhadas ao ambiente local (venv Python 3.14) para garantir
         # que o build remoto use exatamente os mesmos pacotes e evitar conflitos.
-        "google-cloud-aiplatform[adk,agent_engines]==1.139.0",
-        "google-adk==1.26.0",
-        "google-genai==1.65.0",
+        "google-cloud-aiplatform[adk,agent_engines]==1.162.0",
+        "google-adk==2.5.0",
+        "google-genai==2.13.0",
         "cloudpickle==3.1.2",       # necessário para serialização do agente
-        "pydantic==2.12.5",         # necessário pelo google-adk/vertexai
+        "pydantic==2.13.4",         # necessário pelo google-adk/vertexai
         "google-cloud-firestore",
         "cloud-sql-python-connector[pg8000]",  # persistência no Postgres (save_to_postgres_from_state)
         "google-cloud-logging",
