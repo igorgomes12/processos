@@ -465,7 +465,21 @@ def parse_markdown_to_reportlab(markdown_text: str) -> list:
     # Normaliza headings que aparecem no meio de linhas.
     # Ex: "...Câmbio ##1. CONTEXTO..." -> "...Câmbio\n##1. CONTEXTO..."
     # Evita quebrar casos como "C#" exigindo que o char anterior nao seja alfanumerico.
-    markdown_text = re.sub(r'(?<!\n)(?<!\w)(#{1,6})(?=\s*\S)', r'\n\1', markdown_text)
+    #
+    # IMPORTANTE: nunca aplica em linhas de tabela (contêm '|'). Células de tabela
+    # frequentemente têm texto livre com '#' literal (ex.: "Problema #2"), e quebrar
+    # a linha ali corrompe a tabela inteira — o restante da linha (incluindo os
+    # demais pipes) vira texto de heading gigante.
+    def _split_embedded_headings(text: str) -> str:
+        fixed_lines = []
+        for line in text.split('\n'):
+            if '|' in line:
+                fixed_lines.append(line)
+            else:
+                fixed_lines.append(re.sub(r'(?<!\A)(?<!\w)(#{1,6})(?=\s*\S)', r'\n\1', line))
+        return '\n'.join(fixed_lines)
+
+    markdown_text = _split_embedded_headings(markdown_text)
     
     styles = getSampleStyleSheet()
     story = []
