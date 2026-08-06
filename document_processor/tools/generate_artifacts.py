@@ -1,6 +1,5 @@
 """
-Tools determinísticas para geração de artefatos (XLSX e PDF) a partir do state,
-e para persistência no Firestore.
+Tools determinísticas para geração de artefatos (XLSX e PDF) a partir do state.
 
 Estas tools são chamadas pelo document_processor APÓS os sub-agentes concluírem.
 Elas lêem os dados do state e garantem que os artefatos sejam criados e persistidos,
@@ -9,162 +8,27 @@ independentemente de os sub-agentes terem chamado suas próprias tools internas.
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, Any
 
-from google.cloud import firestore
-from google.oauth2 import service_account
 from google.genai.types import Part, Blob
 from google.adk.tools.tool_context import ToolContext
 
 from agent_tools.json_to_xlsx import json_to_xlsx
 from agente_gerador_pdf_md.tools.markdown_to_pdf_tool import _build_pdf
 from document_processor.tools.postgres_tool import _upsert_mermaid_sync, _upsert_tobe_sync
-
-# ─── Configurações Firestore ─────────────────────────────────────────────────
-_CREDENTIALS_PATH = Path(__file__).resolve().parents[2] / "credentials.json"
-
-# Namespace UUID fixo para geração determinística de IDs (mesmo padrão do Postgres).
-# Garante idempotência: reprocessar o mesmo documento sobrescreve os dados sem duplicar.
-_UUID_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-_GCP_PROJECT = "steady-computer-487217-p6"
-_FIRESTORE_DATABASE = "as-is-processes"
-_COLLECTION_NAME = "processos"
-_FIRESTORE_TIMEOUT = 30
+from document_processor.tools.executor import run_in_app_executor
 
 # ─── Arquivo de debug (sobrescrito a cada execução) ─────────────────────────
 _DEBUG_JSON_PATH = Path(__file__).resolve().parents[2] / "debug_last_json.json"
-
-# ─── Singleton async + lock de thread-safety ────────────────────────────────
-_firestore_async_client: firestore.AsyncClient | None = None
-_firestore_client_lock = threading.Lock()
-
-
-def _get_firestore_async_client() -> firestore.AsyncClient:
-    """Singleton thread-safe do cliente Firestore assíncrono.
-
-    Prioridade de autenticação:
-      1. credentials.json local (desenvolvimento)
-      2. Application Default Credentials (Vertex AI / Cloud Run)
-
-    Usa threading.Lock para garantir que apenas uma instância seja criada
-    mesmo em ambientes com múltiplos threads concorrentes (Vertex AI Agent Engine).
-    """
-    global _firestore_async_client
-    with _firestore_client_lock:
-        if _firestore_async_client is None:
-            if _CREDENTIALS_PATH.exists():
-                credentials = service_account.Credentials.from_service_account_file(
-                    str(_CREDENTIALS_PATH),
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
-                )
-                _firestore_async_client = firestore.AsyncClient(
-                    project=_GCP_PROJECT,
-                    credentials=credentials,
-                    database=_FIRESTORE_DATABASE,
-                )
-            else:
-                # Ambiente cloud (Vertex AI Agent Engine / Cloud Run):
-                # usa Application Default Credentials injetadas automaticamente.
-                # A service account do Reasoning Engine precisa ter
-                # roles/datastore.user no projeto para que a escrita funcione.
-                _firestore_async_client = firestore.AsyncClient(
-                    project=_GCP_PROJECT,
-                    database=_FIRESTORE_DATABASE,
-                )
-    return _firestore_async_client
-
-
-def _make_firestore_id(data: dict) -> str:
-    """Gera um ID determinístico para o documento Firestore baseado no conteúdo
-    das rows (ignora meta.createdAt que muda a cada execução).
-    Mesmo conteúdo → mesmo ID → upsert idempotente sem duplicatas.
-    """
-    chave = json.dumps(data.get("rows", data), sort_keys=True, ensure_ascii=False)
-    return str(uuid.uuid5(_UUID_NAMESPACE, chave))
-
-
-async def _write_to_firestore_async(data: dict) -> str:
-    """Executa a escrita assíncrona no Firestore via AsyncClient nativo.
-
-    Persiste o JSON completo como UM único documento com ID determinístico
-    (UUID v5 baseado nas rows), garantindo que reprocessamentos do mesmo
-    documento sobrescrevam os dados sem criar duplicatas (upsert idempotente).
-
-    Retorna o ID do documento persistido.
-    """
-    client = _get_firestore_async_client()
-    doc_id = _make_firestore_id(data)
-    await client.collection(_COLLECTION_NAME).document(doc_id).set(data)
-    return doc_id
-
-
-async def save_to_firestore_from_state(tool_context: ToolContext) -> Dict[str, Any]:
-    """
-    Lê o JSON do state (pdf_input_json) e persiste no Google Cloud Firestore.
-
-    Esta tool é determinística: não depende do LLM para ser chamada.
-    Deve ser invocada pelo document_processor logo após o as_is_agent concluir,
-    garantindo a persistência independentemente do comportamento do sub-agente.
-
-    Returns:
-        Dicionário com status da operação e o ID do documento criado.
-    """
-    raw_json = tool_context.state.get("pdf_input_json", "")
-
-    if not raw_json or not raw_json.strip():
-        return {
-            "status": "error",
-            "message": "State 'pdf_input_json' está vazio. O as_is_agent não gerou o JSON.",
-        }
-
-    json_str = _extract_json_from_text(raw_json)
-    if not json_str:
-        return {
-            "status": "error",
-            "message": (
-                f"Não foi possível extrair JSON válido do state para salvar no Firestore. "
-                f"Conteúdo: {raw_json[:200]}"
-            ),
-        }
-
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        return {"status": "error", "message": f"JSON inválido ao salvar no Firestore: {e}"}
-
-    try:
-        doc_id = await asyncio.wait_for(
-            _write_to_firestore_async(data),
-            timeout=_FIRESTORE_TIMEOUT,
-        )
-        return {
-            "status": "success",
-            "message": (
-                f"JSON persistido com sucesso no Firestore "
-                f"(banco: '{_FIRESTORE_DATABASE}', coleção: '{_COLLECTION_NAME}', "
-                f"documento: '{doc_id}'). "
-                f"ID determinístico — reprocessamentos sobrescrevem sem duplicar."
-            ),
-        }
-    except asyncio.TimeoutError:
-        msg = (
-            f"Timeout ao salvar no Firestore após {_FIRESTORE_TIMEOUT}s. "
-            "Verifique a conectividade e as permissões da service account "
-            "(roles/datastore.user necessário no Vertex AI Reasoning Engine)."
-        )
-        print(f"[Firestore][ERROR] {msg}", file=sys.stderr)
-        return {"status": "error", "message": msg}
-    except Exception as e:
-        msg = f"Erro ao salvar no Firestore: {e}"
-        print(f"[Firestore][ERROR] {msg}", file=sys.stderr)
-        return {"status": "error", "message": msg}
 
 # ─── Timeouts ───────────────────────────────────────────────────────────────
 _XLSX_TIMEOUT = 60
@@ -225,11 +89,9 @@ def _build_xlsx_bytes(json_str: str) -> bytes:
 
 async def generate_xlsx_from_state(tool_context: ToolContext) -> Dict[str, Any]:
     """
-    Lê o JSON do state (pdf_input_json), persiste no Firestore e gera o artefato processos.xlsx.
+    Lê o JSON do state (pdf_input_json) e gera o artefato processos.xlsx.
 
     Esta tool é determinística: não depende do LLM.
-    A persistência no Firestore é feita aqui como side-effect garantido, eliminando a
-    necessidade de uma tool separada que dependeria de chamada explícita pelo LLM.
 
     Returns:
         Dicionário com status da operação.
@@ -258,37 +120,16 @@ async def generate_xlsx_from_state(tool_context: ToolContext) -> Dict[str, Any]:
     except Exception as _e:
         print(f"[WARN] Não foi possível gravar {_DEBUG_JSON_PATH}: {_e}", file=sys.stderr)
 
-    # ── Persistência no Firestore (side-effect garantido, independente de LLM) ──
-    firestore_status = "não realizada"
-    try:
-        data = json.loads(json_str)
-        doc_id = await asyncio.wait_for(
-            _write_to_firestore_async(data),
-            timeout=_FIRESTORE_TIMEOUT,
-        )
-        firestore_status = f"sucesso (doc: {doc_id})"
-    except asyncio.TimeoutError:
-        firestore_status = f"timeout após {_FIRESTORE_TIMEOUT}s"
-        print(
-            f"[Firestore][ERROR] Timeout ao salvar no Firestore após {_FIRESTORE_TIMEOUT}s. "
-            "Verifique as permissões da service account do Vertex AI Reasoning Engine "
-            "(roles/datastore.user é necessário no projeto GCP).",
-            file=sys.stderr,
-        )
-    except Exception as e:
-        firestore_status = f"erro: {e}"
-        print(f"[Firestore][ERROR] Falha ao salvar no Firestore: {e}", file=sys.stderr)
-
     # ── Geração do XLSX ──────────────────────────────────────────────────────────
     try:
         xlsx_bytes = await asyncio.wait_for(
-            asyncio.to_thread(_build_xlsx_bytes, json_str),
+            run_in_app_executor(_build_xlsx_bytes, json_str),
             timeout=_XLSX_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        return {"status": "error", "message": f"Timeout ao gerar XLSX após {_XLSX_TIMEOUT}s. Firestore: {firestore_status}."}
+        return {"status": "error", "message": f"Timeout ao gerar XLSX após {_XLSX_TIMEOUT}s."}
     except Exception as e:
-        return {"status": "error", "message": f"Erro ao gerar XLSX: {e}. Firestore: {firestore_status}."}
+        return {"status": "error", "message": f"Erro ao gerar XLSX: {e}."}
 
     artifact_part = Part(
         inline_data=Blob(
@@ -306,7 +147,7 @@ async def generate_xlsx_from_state(tool_context: ToolContext) -> Dict[str, Any]:
         "status": "success",
         "message": (
             f"Arquivo 'processos.xlsx' (versão {version}) gerado com sucesso "
-            f"e disponível para download. Firestore: {firestore_status}."
+            f"e disponível para download."
         ),
     }
 
@@ -420,7 +261,7 @@ async def save_mermaid_from_state(tool_context: ToolContext) -> Dict[str, Any]:
     # 3. Persiste no Postgres (síncrono via thread para não bloquear o event loop)
     try:
         mensagem = await asyncio.wait_for(
-            asyncio.to_thread(_upsert_mermaid_sync, n2_paths, mermaid_script),
+            run_in_app_executor(_upsert_mermaid_sync, n2_paths, mermaid_script),
             timeout=_MERMAID_TIMEOUT,
         )
         return {"status": "success", "message": mensagem}
@@ -469,7 +310,7 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
 
     try:
         pdf_bytes = await asyncio.wait_for(
-            asyncio.to_thread(_build_pdf, cleaned),
+            run_in_app_executor(_build_pdf, cleaned),
             timeout=_PDF_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -523,7 +364,7 @@ async def generate_pdf_from_state(tool_context: ToolContext) -> Dict[str, Any]:
                     print(f"[Postgres][Mermaid][WARN] {mermaid_status}", file=sys.stderr)
                 else:
                     mermaid_status = await asyncio.wait_for(
-                        asyncio.to_thread(_upsert_mermaid_sync, n2_paths, mermaid_script),
+                        run_in_app_executor(_upsert_mermaid_sync, n2_paths, mermaid_script),
                         timeout=_MERMAID_TIMEOUT,
                     )
     except asyncio.TimeoutError:
@@ -572,7 +413,7 @@ async def generate_pdf_tobe_from_state(tool_context: ToolContext) -> Dict[str, A
 
     try:
         pdf_bytes = await asyncio.wait_for(
-            asyncio.to_thread(_build_pdf, cleaned),
+            run_in_app_executor(_build_pdf, cleaned),
             timeout=_PDF_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -623,7 +464,7 @@ async def generate_pdf_tobe_from_state(tool_context: ToolContext) -> Dict[str, A
                 print(f"[Postgres][TO-BE][WARN] {tobe_persist_status}", file=sys.stderr)
             else:
                 tobe_persist_status = await asyncio.wait_for(
-                    asyncio.to_thread(_upsert_tobe_sync, n2_paths, cleaned),
+                    run_in_app_executor(_upsert_tobe_sync, n2_paths, cleaned),
                     timeout=_TOBE_TIMEOUT,
                 )
     except asyncio.TimeoutError:

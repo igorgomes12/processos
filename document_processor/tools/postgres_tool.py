@@ -38,6 +38,8 @@ from google.cloud.sql.connector import Connector
 from google.oauth2 import service_account
 from google.adk.tools.tool_context import ToolContext
 
+from document_processor.tools.executor import run_in_app_executor
+
 logger = logging.getLogger(__name__)
 
 # --- Configurações -----------------------------------------------------------
@@ -72,37 +74,79 @@ def _get_connector() -> Connector:
         if _connector is not None:
             return _connector
 
+        # timeout=15: bound explícito para as operações internas do Connector
+        # (handshake/cert fetch). Não é garantia absoluta contra travamento —
+        # a chamada síncrona connector.connect() ainda pode bloquear a thread
+        # indefinidamente em cenários de rede que descartam pacotes em
+        # silêncio (ver investigação de 2026-08-06) — por isso essa chamada
+        # roda isolada em run_in_app_executor, nunca no pool padrão do
+        # processo, para não arriscar sufocar o que o google-genai precisa.
         if _CREDENTIALS_PATH.exists():
             credentials = service_account.Credentials.from_service_account_file(
                 str(_CREDENTIALS_PATH),
                 scopes=["https://www.googleapis.com/auth/cloud-platform"],
             )
-            _connector = Connector(credentials=credentials)
+            _connector = Connector(credentials=credentials, timeout=15)
             logger.info("[Postgres] Autenticado via credentials.json")
         else:
             # Vertex AI Agent Engine / Cloud Run: ADC automático.
             # A service account precisa de roles/cloudsql.client.
-            _connector = Connector()
+            _connector = Connector(timeout=15)
             logger.info("[Postgres] Autenticado via ADC")
 
     return _connector
 
 
+# Pré-aquece o Connector no import do módulo (startup do worker), não na
+# primeira gravação de um turno real de usuário — mesmo raciocínio do
+# pré-aquecimento do client do Firestore (ver generate_artifacts.py e a
+# investigação do incidente de travamento intermitente, 2026-08-06).
+try:
+    _get_connector()
+    logger.info("[Postgres] Connector pré-aquecido no import do módulo.")
+except Exception as _exc:
+    logger.warning("[Postgres] Falha ao pré-aquecer Connector no import: %s", _exc)
+
+
+_CONNECT_TIMEOUT = 20  # segundos — ver docstring de _get_connection abaixo
+
+
 def _get_connection():
     """Abre uma nova conexão pg8000 via Cloud SQL Python Connector.
 
+    Réplica manual do que `connector.connect()` (público) faz internamente —
+    `asyncio.run_coroutine_threadsafe(connector.connect_async(...), connector._loop)`
+    seguido de `.result()` — mas passando um timeout REAL para o `.result()`.
+    `connector.connect()` público não expõe essa opção e trava
+    indefinidamente se a conexão TCP/TLS nunca retornar (raiz identificada na
+    investigação do incidente de travamento intermitente, 2026-08-06:
+    `connector.connect()` bloqueia sem timeout, e o socket TCP subjacente
+    também não tem timeout).
+
+    Importante: `concurrent.futures.Future.result(timeout=N)` usa espera
+    bloqueante em nível de SO (`threading.Condition.wait`), que NÃO depende
+    do event loop do asyncio estar sendo escalonado para dessa desistir —
+    mais robusto que `asyncio.wait_for`, que comprovadamente não conseguiu
+    interromper esse tipo de travamento em produção (mesmo isolado em
+    `run_in_app_executor`, ver `agente_processos_chat_hang_incident`).
+
     Uma conexão nova por operação evita problemas de thread-safety quando
-    várias tools rodam concorrentemente via asyncio.to_thread.
-    O túnel TLS é gerenciado pelo Connector (singleton reaproveitado).
+    várias tools rodam concorrentemente. O túnel TLS é gerenciado pelo
+    Connector (singleton reaproveitado, com seu próprio loop interno em
+    background thread — ver `Connector.__init__`).
     """
     connector = _get_connector()
-    return connector.connect(
-        _INSTANCE_CONNECTION_NAME,
-        "pg8000",
-        user=_DB_USER,
-        password=_DB_PASSWORD,
-        db=_DB_NAME,
+    future = asyncio.run_coroutine_threadsafe(
+        connector.connect_async(
+            _INSTANCE_CONNECTION_NAME,
+            "pg8000",
+            user=_DB_USER,
+            password=_DB_PASSWORD,
+            db=_DB_NAME,
+        ),
+        connector._loop,
     )
+    return future.result(timeout=_CONNECT_TIMEOUT)
 
 
 # --- Utilitários internos ----------------------------------------------------
@@ -388,7 +432,7 @@ async def save_to_postgres_from_state(tool_context: ToolContext) -> str:
 
     try:
         mensagem = await asyncio.wait_for(
-            asyncio.to_thread(_persistir_no_postgres, dados),
+            run_in_app_executor(_persistir_no_postgres, dados),
             timeout=_POSTGRES_TIMEOUT,
         )
         logger.info(mensagem)

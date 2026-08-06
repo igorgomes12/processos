@@ -29,6 +29,16 @@ except Exception:  # pragma: no cover - dependencia opcional
 # Debug mode (ativa logs detalhados)
 DEBUG_MERMAID = os.getenv('DEBUG_MERMAID', 'false').lower() == 'true'
 
+# Renderização online do Mermaid via API pública mermaid.ink (chamada de rede
+# externa, fora do Google). Investigação de 2026-08-06 (agente-processos)
+# encontrou essa chamada travando indefinidamente em produção no Vertex AI
+# Agent Engine para diagramas maiores — nem o timeout=15 do urlopen nem o
+# timeout externo de 120s do pipeline conseguiram interromper (mesmo padrão
+# de travamento não-cancelável já visto com Firestore/Postgres nesse
+# ambiente). Desabilitado por padrão no deploy.py; continua ligado por
+# padrão localmente (MERMAID_RENDER_ENABLED não definido = true).
+MERMAID_RENDER_ENABLED = os.getenv('MERMAID_RENDER_ENABLED', 'true').lower() not in ('false', '0', 'no')
+
 
 def _debug_log(message: str):
     """Imprime log apenas se DEBUG_MERMAID estiver ativo."""
@@ -236,6 +246,10 @@ def _render_mermaid_image(mermaid_code: str, max_width: float = 5.5 * inch, max_
 
 def _fetch_mermaid_png_bytes(mermaid_code: str) -> Optional[bytes]:
     """Obtém bytes PNG do Mermaid via mermaid.ink para reutilização em ReportLab e HTML."""
+    if not MERMAID_RENDER_ENABLED:
+        print("[MERMAID] Renderização online desabilitada (MERMAID_RENDER_ENABLED=false) — usando apenas código.")
+        return None
+
     # Limpa o código Mermaid
     cleaned_code = _clean_mermaid_code(mermaid_code)
 

@@ -3,6 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.genai import types as genai_types
+from document_processor.models.sync_gemini import SyncGemini
 from logger import get_logger
 from logger.adk_callbacks import make_before_tool_callback, make_after_tool_callback
 
@@ -67,7 +68,7 @@ _after_tool_cb = make_after_tool_callback(_logger, _before_tool_cb)
 
 pdf_subagent = Agent(
     name="agente_gerador_pdf_md",
-    model="gemini-2.5-flash",
+    model=SyncGemini(model="gemini-2.5-flash"),
     description="Gera documentação de processo em Markdown. Retorna APENAS o conteúdo Markdown completo.",
     instruction=ENHANCED_INSTRUCTION,
     tools=[],  # sem tools — apenas gera markdown, salvo via output_key
@@ -75,8 +76,16 @@ pdf_subagent = Agent(
     before_tool_callback=_before_tool_cb,
     after_tool_callback=_after_tool_cb,
     generate_content_config=genai_types.GenerateContentConfig(
-        # Usa thinking budget moderado para gerar markdown complexo sem
-        # consumir todo o budget em pensamento (evita resposta vazia).
-        thinking_config=genai_types.ThinkingConfig(thinking_budget=8192),
+        # Desativado temporariamente (era 8192): as duas últimas travadas em
+        # produção pararam exatamente nesta chamada, com thinking ativo — o
+        # as_is_agent (thinking_budget=0) nunca travou. Teste de mitigação,
+        # ver [[agente_processos_chat_hang_incident]] (2026-08-06).
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        # Sem timeout explícito, uma chamada travada no backend do Gemini
+        # espera para sempre (default do google-genai é timeout=None).
+        http_options=genai_types.HttpOptions(
+            timeout=180_000,
+            retry_options=genai_types.HttpRetryOptions(attempts=2),
+        ),
     ),
 )

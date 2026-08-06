@@ -4,6 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.genai import types as genai_types
+from document_processor.models.sync_gemini import SyncGemini
 from logger import get_logger
 from logger.adk_callbacks import make_before_tool_callback, make_after_tool_callback
 
@@ -24,7 +25,7 @@ _after_tool_cb = make_after_tool_callback(_logger, _before_tool_cb)
 
 root_agent = Agent(
     name = "as_is",
-    model=model_name,
+    model=SyncGemini(model=model_name),
     description="""Ferramenta para converter processos de negócios em formato de dados estruturados.
     """,
     instruction="""
@@ -156,7 +157,7 @@ root_agent = Agent(
     ❌ NÃO adicione mensagens de status antes do JSON
     
     IMPORTANTE: O JSON que você retornar será usado pelo próximo agente (pdf_subagent),
-               para gerar a planilha Excel e para persistência no Firestore.
+               para gerar a planilha Excel e persistir no banco de dados.
                Retorne SOMENTE o JSON.
     """,
     tools=[],
@@ -168,5 +169,11 @@ root_agent = Agent(
         # e retornar resposta vazia (0 tokens de saída). thinking_budget=0
         # desabilita o pensamento interno, garantindo que o JSON seja gerado.
         thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        # Sem timeout explícito, uma chamada travada no backend do Gemini
+        # espera para sempre (default do google-genai é timeout=None).
+        http_options=genai_types.HttpOptions(
+            timeout=180_000,
+            retry_options=genai_types.HttpRetryOptions(attempts=2),
+        ),
     ),
 )
