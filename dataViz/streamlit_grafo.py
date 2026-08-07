@@ -336,6 +336,10 @@ def _inject_css() -> None:
         #MainMenu { visibility: hidden; }
         footer { visibility: hidden; }
         header { visibility: hidden; }
+        /* O botão de reabrir a sidebar colapsada vive dentro do <header> —
+           escondê-lo junto trava o usuário sem forma de reabrir a sidebar
+           depois de recolhê-la. Reexibe só esse botão. */
+        [data-testid="stExpandSidebarButton"] { visibility: visible !important; }
 
         .empty-state {
             text-align: center;
