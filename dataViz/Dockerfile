@@ -29,6 +29,10 @@ COPY agente_gerador_pdf_md/tools/markdown_to_pdf_tool.py \
 # ── Copia o aplicativo Streamlit ─────────────────────────────────────────────
 COPY dataViz/streamlit_grafo.py dataViz/streamlit_grafo.py
 
+# ── Tema fixo (light) — evita que o app siga o dark-mode do navegador/SO,
+#    o que deixava widgets nativos (expander) e o Mermaid ilegíveis ─────────
+COPY .streamlit/config.toml .streamlit/config.toml
+
 # Cloud Run define $PORT em tempo de execução (padrão = 8080).
 # Streamlit usa a variável via shell expansion no CMD abaixo.
 EXPOSE 8080

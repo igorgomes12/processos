@@ -363,6 +363,57 @@ def _inject_css() -> None:
             flex-wrap: wrap;
             gap: 6px;
         }
+
+        /* ── Mermaid: contraste garantido via CSS de página ──────────────
+           Reforça (não substitui) a diretiva %%{init}%% injetada em
+           _apply_mermaid_theme(). Versões recentes do Streamlit calculam
+           seus próprios themeVariables para mermaid.initialize() a partir
+           da paleta do app, o que pode competir com a diretiva por-diagrama
+           e deixar nós/texto escuros contra fundo escuro. Estas regras
+           seguem os seletores padrão do mermaid.js e usam !important para
+           garantir legibilidade independentemente de qual lado "ganha". */
+        [data-testid="stMermaidChart"] {
+            background: #f8f9fa !important;
+            border-radius: 6px;
+            padding: 8px;
+        }
+        [data-testid="stMermaidChart"] svg { background: transparent !important; }
+        [data-testid="stMermaidChart"] .node rect,
+        [data-testid="stMermaidChart"] .node polygon,
+        [data-testid="stMermaidChart"] .node circle {
+            fill: #7fb8ec !important;
+            stroke: #2f6fb0 !important;
+        }
+        [data-testid="stMermaidChart"] .nodeLabel,
+        [data-testid="stMermaidChart"] .node .label,
+        [data-testid="stMermaidChart"] .node .label div,
+        [data-testid="stMermaidChart"] .node text,
+        [data-testid="stMermaidChart"] .node tspan {
+            color: #0a1a2e !important;
+            fill: #0a1a2e !important;
+        }
+        [data-testid="stMermaidChart"] .edgeLabel,
+        [data-testid="stMermaidChart"] .edgeLabel rect {
+            background-color: #f8f9fa !important;
+            fill: #f8f9fa !important;
+            color: #1a3560 !important;
+        }
+        [data-testid="stMermaidChart"] .edgeLabel text,
+        [data-testid="stMermaidChart"] .edgeLabel tspan,
+        [data-testid="stMermaidChart"] .edgeLabel span {
+            color: #1a3560 !important;
+            fill: #1a3560 !important;
+        }
+        [data-testid="stMermaidChart"] .edgePath .path,
+        [data-testid="stMermaidChart"] .flowchart-link {
+            stroke: #5a8fc7 !important;
+            stroke-width: 2.2px !important;
+        }
+        [data-testid="stMermaidChart"] .arrowheadPath,
+        [data-testid="stMermaidChart"] marker path {
+            fill: #5a8fc7 !important;
+            stroke: #5a8fc7 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,

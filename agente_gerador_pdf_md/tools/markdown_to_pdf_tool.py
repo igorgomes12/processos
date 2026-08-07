@@ -12,7 +12,7 @@ from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, ListFlowable, ListItem, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, ListFlowable, ListItem, Image, KeepTogether
 from reportlab.lib import colors
 
 try:
@@ -184,15 +184,444 @@ def _clean_mermaid_code(mermaid_code: str) -> str:
     return cleaned
 
 
-def _render_mermaid_image(mermaid_code: str, max_width: float = 5.5 * inch, max_height: float = 9.5 * inch) -> Optional[Image]:
+# ─── Renderizador offline de fluxograma (sem chamada de rede) ────────────────
+# Investigação de 2026-08-06 (agente-processos) confirmou em produção que a
+# chamada de rede ao mermaid.ink (ver MERMAID_RENDER_ENABLED acima) trava
+# indefinidamente para diagramas maiores, sem nenhum timeout (urlopen,
+# asyncio.wait_for, OS-level) conseguir interromper. Este renderizador
+# desenha o fluxograma diretamente com primitivas do ReportLab
+# (reportlab.graphics.shapes), sem nenhuma chamada de rede — elimina esse
+# risco por completo. Suporta o subconjunto de sintaxe Mermaid usado pelo
+# nosso próprio prompt (prompts/prompt_agente_gerador_pdf.txt): nós
+# retangulares [Texto], arredondados (Texto) e losango de decisão {Texto},
+# conectados por "-->" simples ou "-- Label -->" com rótulo.
+_NODE_ID_RE = r'[A-Za-z0-9_]+'
+_NODE_SHAPE_RE = r'\[[^\]]*\]|\([^)]*\)|\{[^}]*\}'
+
+_EDGE_LABELED_PIPE_RE = re.compile(
+    rf'^(?P<src>{_NODE_ID_RE})(?P<src_shape>{_NODE_SHAPE_RE})?\s*-->\s*\|(?P<label>[^|]*)\|\s*'
+    rf'(?P<dst>{_NODE_ID_RE})(?P<dst_shape>{_NODE_SHAPE_RE})?\s*$'
+)
+_EDGE_LABELED_DASH_RE = re.compile(
+    rf'^(?P<src>{_NODE_ID_RE})(?P<src_shape>{_NODE_SHAPE_RE})?\s*--\s+(?P<label>.+?)\s+-->\s*'
+    rf'(?P<dst>{_NODE_ID_RE})(?P<dst_shape>{_NODE_SHAPE_RE})?\s*$'
+)
+_EDGE_PLAIN_RE = re.compile(
+    rf'^(?P<src>{_NODE_ID_RE})(?P<src_shape>{_NODE_SHAPE_RE})?\s*-->\s*'
+    rf'(?P<dst>{_NODE_ID_RE})(?P<dst_shape>{_NODE_SHAPE_RE})?\s*$'
+)
+_NODE_DECL_RE = re.compile(
+    rf'^(?P<id>{_NODE_ID_RE})\s*(?P<shape>{_NODE_SHAPE_RE})\s*$'
+)
+
+
+def _mermaid_shape_kind(shape_text: Optional[str]) -> str:
+    if not shape_text:
+        return 'rect'
+    if shape_text.startswith('{'):
+        return 'diamond'
+    if shape_text.startswith('('):
+        return 'round'
+    return 'rect'
+
+
+def _mermaid_shape_label(node_id: str, shape_text: Optional[str]) -> str:
+    if not shape_text:
+        return node_id
+    return shape_text[1:-1].strip() or node_id
+
+
+def _parse_mermaid_flowchart(mermaid_code: str):
+    """Faz o parse do subconjunto de sintaxe Mermaid usado pelo nosso prompt.
+
+    Retorna (nodes, edges, order) onde:
+      nodes: dict node_id -> {"label": str, "shape": "rect"|"round"|"diamond"}
+      edges: list de (src_id, dst_id, label|None)
+      order: lista de node_id na ordem de primeira aparição (usada no layout)
+    """
+    cleaned = _clean_mermaid_code(mermaid_code)
+    lines = [ln.strip() for ln in cleaned.split('\n') if ln.strip()]
+
+    nodes: Dict[str, Dict[str, str]] = {}
+    edges = []
+    order = []
+
+    def _register(node_id: str, shape_text: Optional[str]):
+        if node_id not in nodes:
+            nodes[node_id] = {
+                "label": _mermaid_shape_label(node_id, shape_text),
+                "shape": _mermaid_shape_kind(shape_text),
+            }
+            order.append(node_id)
+        elif shape_text:
+            # Nó já visto sem shape explícito antes (referência) — agora define o shape.
+            nodes[node_id]["label"] = _mermaid_shape_label(node_id, shape_text)
+            nodes[node_id]["shape"] = _mermaid_shape_kind(shape_text)
+
+    in_subgraph = False
+    for line in lines:
+        low = line.lower()
+        if low.startswith(('flowchart', 'graph ')) or low == 'graph':
+            continue
+        if low.startswith('subgraph'):
+            in_subgraph = True
+            continue
+        if low == 'end':
+            in_subgraph = False
+            continue
+        if line.startswith('%%'):
+            continue
+
+        m = _EDGE_LABELED_PIPE_RE.match(line) or _EDGE_LABELED_DASH_RE.match(line) or _EDGE_PLAIN_RE.match(line)
+        if m:
+            gd = m.groupdict()
+            _register(gd['src'], gd.get('src_shape'))
+            _register(gd['dst'], gd.get('dst_shape'))
+            label = (gd.get('label') or '').strip() or None
+            edges.append((gd['src'], gd['dst'], label))
+            continue
+
+        m = _NODE_DECL_RE.match(line)
+        if m:
+            _register(m.group('id'), m.group('shape'))
+            continue
+        # Linha não reconhecida (ex.: sintaxe não suportada) — ignora silenciosamente.
+
+    return nodes, edges, order
+
+
+def _layout_flowchart_ranks(nodes: dict, edges: list, order: list) -> Dict[str, int]:
+    """Calcula o "rank" (linha/nível) de cada nó via longest-path layering.
+
+    Nós sem aresta de entrada começam no rank 0; cada nó recebe
+    max(rank atual, rank_do_predecessor + 1), processado em ordem
+    topológica (Kahn). Um fluxograma pode legitimamente ter um ciclo (ex.:
+    "reprovado -> volta para o colaborador -> reenvia"): quando a fila
+    topológica trava (ciclo), força o próximo nó ainda pendente — na ordem
+    de aparição no código — a entrar na fila mesmo com predecessores
+    pendentes, "quebrando" o ciclo naquele ponto. O nó forçado mantém
+    qualquer rank já propagado por predecessores já processados, e a(s)
+    aresta(s) que ainda apontava(m) pra ele são automaticamente tratadas
+    como "aresta lateral" mais adiante (rank do destino não é src+1),
+    já que só se propaga rank para nós ainda em `remaining`.
+    """
+    incoming = {nid: [] for nid in nodes}
+    outgoing = {nid: [] for nid in nodes}
+    for src, dst, _label in edges:
+        if src in nodes and dst in nodes and src != dst:
+            outgoing[src].append(dst)
+            incoming[dst].append(src)
+
+    remaining_in_degree = {nid: len(incoming[nid]) for nid in nodes}
+    rank = {nid: 0 for nid in nodes}
+
+    from collections import deque
+    remaining = set(nodes.keys())
+    queue = deque(nid for nid in order if remaining_in_degree[nid] == 0)
+
+    while remaining:
+        if not queue:
+            for nid in order:
+                if nid in remaining:
+                    queue.append(nid)
+                    break
+        nid = queue.popleft()
+        if nid not in remaining:
+            continue
+        remaining.discard(nid)
+        for nxt in outgoing[nid]:
+            if nxt in remaining:
+                rank[nxt] = max(rank[nxt], rank[nid] + 1)
+                remaining_in_degree[nxt] -= 1
+                if remaining_in_degree[nxt] <= 0:
+                    queue.append(nxt)
+
+    return rank
+
+
+def _wrap_text_lines(text: str, font_name: str, font_size: float, max_width: float, max_lines: int = 3) -> list:
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    words = text.split()
+    if not words:
+        return ['']
+    lines = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if stringWidth(candidate, font_name, font_size) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+        if len(lines) >= max_lines - 1:
+            break
+    lines.append(current)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+    if len(lines) == max_lines:
+        # Verifica se sobrou texto não incluído — trunca a última linha com "..."
+        consumed = sum(len(l) for l in lines)
+        if consumed < len(text.replace(' ', '')):
+            last = lines[-1]
+            while stringWidth(last + '...', font_name, font_size) > max_width and len(last) > 1:
+                last = last[:-1]
+            lines[-1] = last + '...'
+    return lines
+
+
+def _draw_flowchart_offline(mermaid_code: str, max_width: float = 5.5 * inch, max_height: float = 9.5 * inch) -> Optional['Drawing']:
+    """Desenha o fluxograma Mermaid diretamente com primitivas ReportLab,
+    sem nenhuma chamada de rede. Retorna None se o código não puder ser
+    interpretado (ex.: sintaxe não suportada) — quem chama deve cair no
+    fallback de texto puro nesse caso.
+    """
+    try:
+        from reportlab.graphics.shapes import Drawing, Rect, String, Line, Polygon, Group
+    except Exception:
+        return None
+
+    try:
+        nodes, edges, order = _parse_mermaid_flowchart(mermaid_code)
+        if not nodes:
+            return None
+
+        rank = _layout_flowchart_ranks(nodes, edges, order)
+
+        rows: Dict[int, list] = {}
+        for nid in order:
+            rows.setdefault(rank.get(nid, 0), []).append(nid)
+
+        FONT_NAME = 'Helvetica'
+        FONT_SIZE = 8
+        BOX_WIDTH = 170
+        BOX_PADDING = 8
+        LINE_HEIGHT = 10
+        GAP_X = 22
+        GAP_Y = 34
+        MARGIN = 10
+
+        box_dims = {}
+        for nid, info in nodes.items():
+            usable_w = BOX_WIDTH - 2 * BOX_PADDING
+            lines = _wrap_text_lines(info['label'], FONT_NAME, FONT_SIZE, usable_w)
+            h = max(34, len(lines) * LINE_HEIGHT + 2 * BOX_PADDING)
+            box_dims[nid] = {'lines': lines, 'w': BOX_WIDTH, 'h': h}
+
+        sorted_ranks = sorted(rows.keys())
+        row_heights = {r: max(box_dims[nid]['h'] for nid in rows[r]) for r in sorted_ranks}
+        row_width = {r: len(rows[r]) * BOX_WIDTH + (len(rows[r]) - 1) * GAP_X for r in sorted_ranks}
+        content_width = max(row_width.values()) if row_width else BOX_WIDTH
+
+        # Arestas que não vão de um rank pro seguinte (voltas/loops, ex.: uma
+        # reprovação que volta pra uma etapa anterior) não podem ser desenhadas
+        # como linha reta — cruzariam por cima das caixas do meio. Reserva uma
+        # faixa lateral à direita pra rotear essas arestas por fora.
+        def _is_side_edge(src, dst):
+            if src not in nodes or dst not in nodes:
+                return False
+            return rank.get(dst, 0) != rank.get(src, 0) + 1
+
+        # Cada aresta lateral ganha sua própria coluna, deslocada mais pra fora
+        # que a anterior, pra não colidir quando há mais de uma volta no mesmo
+        # diagrama (ex.: duas reprovações que retornam a etapas diferentes).
+        side_edge_loop_x: Dict[tuple, float] = {}
+        LOOP_STEP = 16
+        LOOP_START = 22
+        for _src, _dst, _lbl in edges:
+            if _is_side_edge(_src, _dst):
+                key = (_src, _dst, _lbl)
+                side_edge_loop_x[key] = content_width + LOOP_START + LOOP_STEP * len(side_edge_loop_x)
+        LOOP_MARGIN = (LOOP_START + LOOP_STEP * len(side_edge_loop_x) + 15) if side_edge_loop_x else 0
+        canvas_width = content_width + LOOP_MARGIN
+
+        positions = {}
+        y_cursor = MARGIN
+        # Desenha de cima pra baixo, mas em coordenadas ReportLab (origem embaixo à
+        # esquerda) o rank 0 deve ficar no topo — por isso preenche de trás pra
+        # frente ao final (inverte depois de calcular a altura total).
+        row_y = {}
+        for r in sorted_ranks:
+            row_y[r] = y_cursor
+            y_cursor += row_heights[r] + GAP_Y
+        total_height = y_cursor - GAP_Y + MARGIN
+
+        for r in sorted_ranks:
+            n = len(rows[r])
+            total_w = row_width[r]
+            # Centraliza dentro da largura de conteúdo (sem a faixa lateral de loop),
+            # mantendo as caixas à esquerda e a faixa reservada livre à direita.
+            start_x = (content_width - total_w) / 2
+            x_cursor = start_x
+            # y invertido: rank 0 no topo do desenho final
+            top_y = total_height - row_y[r] - row_heights[r]
+            for nid in rows[r]:
+                w = box_dims[nid]['w']
+                h = box_dims[nid]['h']
+                positions[nid] = {
+                    'x': x_cursor, 'y': top_y, 'w': w, 'h': h,
+                    'cx': x_cursor + w / 2, 'cy': top_y + h / 2,
+                }
+                x_cursor += w + GAP_X
+
+        canvas_height = total_height
+
+        shapes = []
+        NODE_FILL = {
+            'rect': '#E8F0FE', 'round': '#E6F4EA', 'diamond': '#FEF7E0',
+        }
+        NODE_STROKE = {
+            'rect': '#4285F4', 'round': '#34A853', 'diamond': '#F9AB00',
+        }
+
+        import math
+        EDGE_COLOR = colors.HexColor('#5F6368')
+
+        def _add_arrowhead(x2, y2, ang):
+            arrow_len, arrow_w = 7, 4
+            ax = x2 - arrow_len * math.cos(ang)
+            ay = y2 - arrow_len * math.sin(ang)
+            perp = ang + math.pi / 2
+            p_left = (ax + arrow_w * math.cos(perp), ay + arrow_w * math.sin(perp))
+            p_right = (ax - arrow_w * math.cos(perp), ay - arrow_w * math.sin(perp))
+            shapes.append(Polygon(
+                points=[x2, y2, p_left[0], p_left[1], p_right[0], p_right[1]],
+                fillColor=EDGE_COLOR, strokeColor=None,
+            ))
+
+        def _add_label(mx, my, label):
+            if not label:
+                return
+            label_w = min(len(label) * FONT_SIZE * 0.6 + 6, 90)
+            shapes.append(Rect(mx - label_w / 2, my - 6, label_w, 12,
+                                fillColor=colors.white, strokeColor=None))
+            shapes.append(String(mx, my - 3, label, fontName=FONT_NAME,
+                                  fontSize=FONT_SIZE - 1, textAnchor='middle',
+                                  fillColor=EDGE_COLOR))
+
+        # Arestas primeiro (para ficarem atrás das caixas)
+        for src, dst, label in edges:
+            if src not in positions or dst not in positions:
+                continue
+            p1, p2 = positions[src], positions[dst]
+
+            if _is_side_edge(src, dst):
+                # Aresta que não vai pro próximo rank em sequência (ex.: uma volta/loop,
+                # como reprovação que retorna a uma etapa anterior) — roteia por uma
+                # alça pela faixa lateral direita reservada, em vez de linha reta que
+                # cruzaria por cima das caixas do meio. Cada aresta lateral usa sua
+                # própria coluna (side_edge_loop_x) pra não colidir com outras.
+                loop_x = side_edge_loop_x.get((src, dst, label), canvas_width - 8)
+                x1, y1 = p1['x'] + p1['w'], p1['cy']
+                x2, y2 = p2['x'] + p2['w'], p2['cy']
+                shapes.append(Line(x1, y1, loop_x, y1, strokeColor=EDGE_COLOR, strokeWidth=1.2))
+                shapes.append(Line(loop_x, y1, loop_x, y2, strokeColor=EDGE_COLOR, strokeWidth=1.2))
+                shapes.append(Line(loop_x, y2, x2, y2, strokeColor=EDGE_COLOR, strokeWidth=1.2))
+                _add_arrowhead(x2, y2, math.pi)  # aponta pra esquerda, de volta pro nó
+                _add_label(loop_x + 4, (y1 + y2) / 2, label)
+                continue
+
+            if p2['cy'] < p1['cy']:
+                x1, y1 = p1['cx'], p1['y']
+                x2, y2 = p2['cx'], p2['y'] + p2['h']
+            elif p2['cy'] > p1['cy']:
+                x1, y1 = p1['cx'], p1['y'] + p1['h']
+                x2, y2 = p2['cx'], p2['y']
+            else:
+                x1, y1 = p1['x'] + p1['w'], p1['cy']
+                x2, y2 = p2['x'], p2['cy']
+
+            shapes.append(Line(x1, y1, x2, y2, strokeColor=EDGE_COLOR, strokeWidth=1.2))
+            _add_arrowhead(x2, y2, math.atan2(y2 - y1, x2 - x1))
+            _add_label((x1 + x2) / 2, (y1 + y2) / 2, label)
+
+        # Caixas dos nós
+        for nid, pos in positions.items():
+            info = nodes[nid]
+            dims = box_dims[nid]
+            kind = info['shape']
+            fill = colors.HexColor(NODE_FILL.get(kind, '#E8F0FE'))
+            stroke = colors.HexColor(NODE_STROKE.get(kind, '#4285F4'))
+
+            if kind == 'diamond':
+                cx, cy = pos['cx'], pos['cy']
+                hw, hh = pos['w'] / 2, pos['h'] / 2
+                shapes.append(Polygon(
+                    points=[cx, cy + hh, cx + hw, cy, cx, cy - hh, cx - hw, cy],
+                    fillColor=fill, strokeColor=stroke, strokeWidth=1,
+                ))
+            elif kind == 'round':
+                shapes.append(Rect(pos['x'], pos['y'], pos['w'], pos['h'],
+                                    rx=pos['h'] / 2, ry=pos['h'] / 2,
+                                    fillColor=fill, strokeColor=stroke, strokeWidth=1))
+            else:
+                shapes.append(Rect(pos['x'], pos['y'], pos['w'], pos['h'],
+                                    fillColor=fill, strokeColor=stroke, strokeWidth=1))
+
+            lines = dims['lines']
+            text_y = pos['cy'] + (len(lines) - 1) * LINE_HEIGHT / 2
+            for ln in lines:
+                shapes.append(String(pos['cx'], text_y - FONT_SIZE / 2.8, ln,
+                                      fontName=FONT_NAME, fontSize=FONT_SIZE,
+                                      textAnchor='middle', fillColor=colors.HexColor('#202124')))
+                text_y -= LINE_HEIGHT
+
+        scale = min(max_width / canvas_width, max_height / canvas_height, 1.0)
+        final_w = canvas_width * scale
+        final_h = canvas_height * scale
+
+        drawing = Drawing(final_w, final_h)
+        if scale < 1.0:
+            group = Group(*shapes)
+            group.transform = (scale, 0, 0, scale, 0, 0)
+            drawing.add(group)
+        else:
+            for shp in shapes:
+                drawing.add(shp)
+
+        # Centraliza o diagrama na largura útil da página (por padrão os
+        # Flowables do ReportLab alinham à esquerda, deixando um vão em
+        # branco grande à direita para diagramas mais estreitos).
+        drawing.hAlign = 'CENTER'
+
+        return drawing
+    except Exception as e:
+        print(f"[MERMAID] Renderizador offline falhou: {type(e).__name__}: {e}")
+        return None
+
+
+def _render_mermaid_image(mermaid_code: str, max_width: float = 5.5 * inch, max_height: float = 9.5 * inch):
+    """
+    Renderiza um diagrama Mermaid para o PDF. Tenta primeiro o renderizador
+    offline (sem rede, ver _draw_flowchart_offline) — cobre o subconjunto de
+    sintaxe usado pelo nosso prompt e é o caminho usado em produção. Só cai
+    para a API online mermaid.ink se o offline não conseguir interpretar o
+    código E MERMAID_RENDER_ENABLED estiver ligado (desligado em produção).
+
+    Returns:
+        Um Drawing (offline) ou Image (online) do ReportLab, ou None se
+        nenhum dos dois conseguir renderizar.
+    """
+    drawing = _draw_flowchart_offline(mermaid_code, max_width, max_height)
+    if drawing is not None:
+        return drawing
+
+    if not MERMAID_RENDER_ENABLED:
+        return None
+
+    return _render_mermaid_image_online(mermaid_code, max_width, max_height)
+
+
+def _render_mermaid_image_online(mermaid_code: str, max_width: float = 5.5 * inch, max_height: float = 9.5 * inch) -> Optional[Image]:
     """
     Renderiza um diagrama Mermaid como imagem usando a API pública mermaid.ink.
-    
+    Fallback usado apenas quando o renderizador offline não consegue
+    interpretar o código E MERMAID_RENDER_ENABLED está ligado.
+
     Args:
         mermaid_code: Código Mermaid a ser renderizado
         max_width: Largura máxima da imagem no PDF (em pontos) - padrão ~396pts
         max_height: Altura máxima da imagem no PDF (em pontos) - padrão ~684pts
-    
+
     Returns:
         Objeto Image do ReportLab ou None em caso de erro
     """
@@ -457,6 +886,28 @@ def _build_table_flowable(table_rows: list[list[str]], styles) -> Table:
     return table
 
 
+_HEADING_STYLE_NAMES = ('CustomHeading2', 'CustomHeading3', 'CustomTitle')
+
+
+def _pop_preceding_heading(story: list) -> list:
+    """Remove e retorna o título de seção (+ eventuais Spacers de linhas em
+    branco) do fim de `story`, se houver um logo antes da posição atual.
+
+    Usado para agrupar (via KeepTogether) um título com o flowable grande
+    que vem em seguida (tabela, diagrama Mermaid) — sem isso, se o
+    flowable não couber no resto da página atual, ele pula sozinho pra
+    próxima página, deixando o título "órfão" seguido de um vão em branco.
+    """
+    j = len(story) - 1
+    while j >= 0 and isinstance(story[j], Spacer):
+        j -= 1
+    if j >= 0 and isinstance(story[j], Paragraph) and getattr(story[j].style, 'name', '') in _HEADING_STYLE_NAMES:
+        items = story[j:]
+        del story[j:]
+        return items
+    return []
+
+
 def parse_markdown_to_reportlab(markdown_text: str) -> list:
     """
     Converte markdown para elementos do ReportLab (Platypus).
@@ -580,11 +1031,15 @@ def parse_markdown_to_reportlab(markdown_text: str) -> list:
                 # Se for Mermaid, tenta renderizar como imagem
                 if code_block_type == 'mermaid':
                     print(f"[MERMAID] 🎨 Tentando renderizar diagrama ({len(code_text)} chars)...")
-                    mermaid_img = _render_mermaid_image(code_text)
+                    mermaid_img = _render_mermaid_image(code_text, max_height=8.5 * inch)
                     if mermaid_img:
-                        # Adiciona a imagem renderizada
-                        print(f"[MERMAID] ✅ Imagem renderizada - adicionando ao PDF (dimensões: {mermaid_img.drawWidth:.0f}x{mermaid_img.drawHeight:.0f}pts)")
-                        story.append(mermaid_img)
+                        # Adiciona a imagem renderizada (Drawing offline usa .width/.height, Image online usa .drawWidth/.drawHeight)
+                        _w = getattr(mermaid_img, 'drawWidth', getattr(mermaid_img, 'width', 0))
+                        _h = getattr(mermaid_img, 'drawHeight', getattr(mermaid_img, 'height', 0))
+                        print(f"[MERMAID] ✅ Diagrama renderizado - adicionando ao PDF (dimensões: {_w:.0f}x{_h:.0f}pts)")
+                        # Mantém o título da seção junto com o diagrama (ver _pop_preceding_heading).
+                        keep_items = _pop_preceding_heading(story) + [mermaid_img]
+                        story.append(KeepTogether(keep_items))
                         story.append(Spacer(1, 0.1*inch))
                     else:
                         print(f"[MERMAID] ⚠️  Falha ao renderizar - usando apenas código")
@@ -699,7 +1154,9 @@ def parse_markdown_to_reportlab(markdown_text: str) -> list:
             if i + 1 >= len(lines) or (not _looks_like_table_row(next_line) and not _is_table_divider_line(next_line)):
                 if table_rows:
                     t = _build_table_flowable(table_rows, styles)
-                    story.append(t)
+                    # Mantém o título da seção junto com a tabela (ver _pop_preceding_heading).
+                    keep_items = _pop_preceding_heading(story) + [t]
+                    story.append(KeepTogether(keep_items))
                     story.append(Spacer(1, 0.2 * inch))
                 in_table = False
                 table_rows = []
